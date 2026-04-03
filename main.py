@@ -96,8 +96,6 @@ def format_new_sub(sub, stats):
 
 
 def format_startup(stats, apis_data):
-    print("STATS DATA:", json.dumps(stats))
-
     total     = stats.get("totalEarned", stats.get("total_earned", "N/A"))
     monthly   = stats.get("thisMonthRevenue", stats.get("monthly_revenue", "N/A"))
     sub_count = stats.get("subscriberCount", stats.get("subscriber_count", "N/A"))
@@ -127,7 +125,8 @@ def main():
     while True:
         try:
             stats     = fetch(STATS_URL)
-print("STATS DATA:", json.dumps(stats))
+            print("STATS DATA:", json.dumps(stats))  # debug — remove once fields confirmed
+
             subs_data = fetch(SUBSCRIBERS_URL)
 
             try:
