@@ -161,8 +161,10 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
     api_count = stats.get("apiCount", "N/A")
     total_earned = round(earnings.get("totalEarningsUsdc", 0), 2)
     this_month = round(earnings.get("thisMonthUsdc", 0), 2)
-    apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
     now_pst = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
+
+    apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
+    apis = sorted(apis, key=lambda a: a.get("subscriberCount") or a.get("subscribers") or 0, reverse=True)
 
     if new_sub:
         name = new_sub.get("name") or new_sub.get("username") or new_sub.get("email") or "Unknown"
@@ -205,7 +207,6 @@ def handle_admin_commands(seen):
         if not updates:
             return
 
-        # Save offset immediately before processing to prevent duplicate handling
         new_offset = updates[-1]["update_id"] + 1
         save_offset(new_offset)
 
