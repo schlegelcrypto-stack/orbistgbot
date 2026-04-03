@@ -7,7 +7,8 @@ import os
 ORBIS_API_KEY    = os.environ.get("ORBIS_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-POLL_INTERVAL    = 60
+POLL_INTERVAL    = 300  # 5 minutes to avoid rate limiting
+ERROR_COOLDOWN   = 3600  # Only send error alerts once per hour
 
 ORBIS_HEADERS = {"x-api-key": ORBIS_API_KEY}
 
@@ -16,6 +17,8 @@ SUBSCRIBERS_URL = "https://orbisapi.com/api/provider/subscribers"
 APIS_URL        = "https://orbisapi.com/api/provider/apis"
 
 SEEN_FILE = "seen_subscribers.json"
+
+last_error_time = 0
 
 
 def send_telegram(message):
@@ -27,8 +30,18 @@ def send_telegram(message):
     })
 
 
+def send_error(message):
+    global last_error_time
+    now = time.time()
+    if now - last_error_time > ERROR_COOLDOWN:
+        send_telegram(f"⚠️ Orbis Bot error: {message}")
+        last_error_time = now
+    else:
+        print(f"Error suppressed (cooldown active): {message}")
+
+
 def fetch(url):
-    r = requests.get(url, headers=ORBIS_HEADERS, timeout=10)
+    r = requests.get(url, headers=ORBIS_HEADERS, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -100,7 +113,8 @@ def format_startup(earnings, apis_data):
         f"💰 Total Earned: ${total}\n"
         f"📅 This Month:   ${monthly}\n"
         f"👥 Subscribers:  {sub_count}\n"
-        f"\n📦 <b>Your APIs:</b>{api_lines}"
+        f"\n📦 <b>Your APIs (top 5):</b>{api_lines}\n\n"
+        f"🔄 Polling every 5 minutes"
     )
 
 
@@ -113,7 +127,13 @@ def main():
         try:
             earnings  = fetch(EARNINGS_URL)
             subs_data = fetch(SUBSCRIBERS_URL)
-            apis_data = fetch(APIS_URL)
+
+            # Fetch APIs separately with its own error handling
+            try:
+                apis_data = fetch(APIS_URL)
+            except Exception as e:
+                print(f"APIs endpoint error (non-fatal): {e}")
+                apis_data = []
 
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
@@ -136,11 +156,11 @@ def main():
                     save_seen(current_ids)
                     seen = current_ids
                 else:
-                    print(f"No new subscribers. Checking again in {POLL_INTERVAL}s...")
+                    print(f"No new subscribers. Checking again in {POLL_INTERVAL // 60} minutes...")
 
         except Exception as e:
             print(f"Error: {e}")
-            send_telegram(f"⚠️ Orbis Bot error: {e}")
+            send_error(str(e))
 
         time.sleep(POLL_INTERVAL)
 
