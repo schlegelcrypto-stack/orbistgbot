@@ -14,58 +14,83 @@ STATS_URL = "https://orbisapi.com/api/provider/stats"
 SUBSCRIBERS_URL = "https://orbisapi.com/api/provider/subscribers"
 APIS_URL = "https://orbisapi.com/api/provider/apis"
 SEEN_FILE = "seen_subscribers.json"
-MEDIA_FILE = "media_url.txt"
+MEDIA_FILE = "media_config.json"
+OFFSET_FILE = "update_offset.json"
+
 last_error_time = 0
 
-DEFAULT_IMAGE = "https://i.imgur.com/tlMpKo1.png"
 
-INLINE_KEYBOARD = {
-    "inline_keyboard": [[
-        {"text": "ORBIS", "url": "https://orbisapi.com"},
-        {"text": "Vote", "url": "https://bags.fm/hackathon/apps"}
-    ]]
-}
-
-
-def get_media_url():
+def load_media():
     if os.path.exists(MEDIA_FILE):
         with open(MEDIA_FILE) as f:
-            url = f.read().strip()
-            if url:
-                return url
-    return DEFAULT_IMAGE
+            return json.load(f)
+    return {"type": "none"}
 
 
-def set_media_url(url):
+def save_media(config):
     with open(MEDIA_FILE, "w") as f:
-        f.write(url.strip())
+        json.dump(config, f)
 
 
-def send_photo(caption):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-    requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "photo": get_media_url(),
-        "caption": caption,
-        "parse_mode": "HTML",
-        "reply_markup": INLINE_KEYBOARD
-    })
+def load_offset():
+    if os.path.exists(OFFSET_FILE):
+        with open(OFFSET_FILE) as f:
+            return json.load(f).get("offset", 0)
+    return 0
+
+
+def save_offset(offset):
+    with open(OFFSET_FILE, "w") as f:
+        json.dump({"offset": offset}, f)
+
+
+def send_with_media(caption):
+    media = load_media()
+    base = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+    keyboard = {"inline_keyboard": [[
+        {"text": "\U0001f7e3 ORBIS", "url": "https://orbisapi.com"},
+        {"text": "\U0001f3c6 Vote", "url": "https://bags.fm/hackathon/apps"}
+    ]]}
+
+    if media["type"] == "photo":
+        requests.post(f"{base}/sendPhoto", json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "photo": media["file_id"],
+            "caption": caption,
+            "reply_markup": keyboard
+        })
+    elif media["type"] == "animation":
+        requests.post(f"{base}/sendAnimation", json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "animation": media["file_id"],
+            "caption": caption,
+            "reply_markup": keyboard
+        })
+    elif media["type"] == "url":
+        requests.post(f"{base}/sendPhoto", json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "photo": media["url"],
+            "caption": caption,
+            "reply_markup": keyboard
+        })
+    else:
+        requests.post(f"{base}/sendMessage", json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": caption,
+            "reply_markup": keyboard
+        })
 
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    })
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
 
 def send_error(message):
     global last_error_time
     now = time.time()
     if now - last_error_time > ERROR_COOLDOWN:
-        send_message(f"Warning: {message}")
+        send_message(f"\u26a0\ufe0f Bot error: {message}")
         last_error_time = now
 
 
@@ -101,24 +126,25 @@ def format_stats(stats, apis_data, new_sub=None):
     sub_count = stats.get("totalSubscribers", "N/A")
     total_calls = stats.get("totalCalls", "N/A")
     api_count = stats.get("apiCount", "N/A")
-    earnings = stats.get("totalEarned", stats.get("earnings", "$0.00"))
+    earnings = stats.get("totalEarned", stats.get("earnings", "0.00"))
+
     apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
 
     if new_sub:
         name = new_sub.get("name") or new_sub.get("username") or new_sub.get("email") or "Unknown"
         api = new_sub.get("apiName") or new_sub.get("api_name") or "Unknown API"
         plan = new_sub.get("plan") or new_sub.get("tier") or "Free"
-        header = f"New Subscriber!\n{name} - {api} ({plan})\n\n"
+        header = f"\U0001f389 New Subscriber!\n{name} subscribed to {api} ({plan})\n"
     else:
-        header = "Schlegel Orbis API Tracker\n\n"
+        header = "Schlegel Orbis API Tracker\n"
 
     lines = [
         header,
-        f"Total Subscribers: {sub_count}",
-        f"Total API Calls:   {total_calls}",
-        f"APIs Listed:       {api_count}",
+        f"\U0001f465 Total Subscribers: {sub_count}",
+        f"\U0001f4ca Total API Calls:   {total_calls}",
+        f"\U0001f517 APIs Listed:       {api_count}",
         "",
-        f"Total Earnings: ${earnings}",
+        f"\U0001f4b0 Total Earnings: ${earnings} \U0001f4b0",
         "",
         "Top APIs:",
     ]
@@ -133,50 +159,73 @@ def format_stats(stats, apis_data, new_sub=None):
 
 
 def handle_admin_commands(seen):
+    offset = load_offset()
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, params={"offset": offset, "timeout": 1}, timeout=10)
         updates = r.json().get("result", [])
         if not updates:
             return
 
-        last_update_id = None
         for update in updates:
-            last_update_id = update.get("update_id")
+            offset = update.get("update_id") + 1
             msg = update.get("message", {})
-            text = msg.get("text", "")
             chat_id = str(msg.get("chat", {}).get("id", ""))
 
             if chat_id != TELEGRAM_CHAT_ID:
                 continue
 
+            text = msg.get("text", "")
+
+            # Handle direct photo upload
+            if msg.get("photo"):
+                file_id = msg["photo"][-1]["file_id"]
+                save_media({"type": "photo", "file_id": file_id})
+                send_message("\u2705 Image saved! Bot will use this photo.")
+                continue
+
+            # Handle GIF/animation upload
+            if msg.get("animation"):
+                file_id = msg["animation"]["file_id"]
+                save_media({"type": "animation", "file_id": file_id})
+                send_message("\u2705 GIF saved! Bot will use this animation.")
+                continue
+
+            # Handle URL command
             if text.startswith("/setimage "):
                 new_url = text[len("/setimage "):].strip()
-                set_media_url(new_url)
-                send_message(f"Image updated!")
+                save_media({"type": "url", "url": new_url})
+                send_message(f"\u2705 Image URL updated!")
+                continue
 
-            elif text == "/status":
+            if text == "/clearmedia":
+                save_media({"type": "none"})
+                send_message("\u2705 Media cleared. Bot will send text only.")
+                continue
+
+            if text == "/status":
+                media = load_media()
                 send_message(
-                    f"Bot is running\n"
+                    f"Bot Status\n\n"
                     f"Poll interval: {POLL_INTERVAL // 60} min\n"
                     f"Seen subscribers: {len(seen)}\n"
-                    f"Media: {get_media_url()}"
+                    f"Media type: {media.get('type', 'none')}"
                 )
+                continue
 
-            elif text == "/help":
+            if text == "/help":
                 send_message(
                     "Admin Commands:\n\n"
-                    "/setimage [url] - Change the bot image\n"
-                    "/status - Show bot status\n"
-                    "/help - Show this message"
+                    "Send any photo - set as bot image\n"
+                    "Send any GIF - set as bot animation\n"
+                    "/setimage [url] - set image from URL\n"
+                    "/clearmedia - remove media\n"
+                    "/status - show bot status\n"
+                    "/help - show this message"
                 )
+                continue
 
-        if last_update_id is not None:
-            requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-                params={"offset": last_update_id + 1},
-                timeout=10
-            )
+        save_offset(offset)
     except Exception as e:
         print(f"Admin command error: {e}")
 
@@ -201,7 +250,7 @@ def main():
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
             if first_run:
-                send_photo(format_stats(stats, apis_data))
+                send_with_media(format_stats(stats, apis_data))
                 save_seen(current_ids)
                 seen = current_ids
                 first_run = False
@@ -215,7 +264,7 @@ def main():
                                 s.get("id") or s.get("userId") or s.get("subscriberId")
                             ) == uid), {}
                         )
-                        send_photo(format_stats(stats, apis_data, new_sub=sub))
+                        send_with_media(format_stats(stats, apis_data, new_sub=sub))
                         print(f"New subscriber: {uid}")
                     save_seen(current_ids)
                     seen = current_ids
