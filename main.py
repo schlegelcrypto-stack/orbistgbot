@@ -12,6 +12,12 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 ADMIN_IDS = set(os.environ.get("ADMIN_IDS", TELEGRAM_CHAT_ID).split(","))
 ERROR_COOLDOWN = 3600
 
+# Persistent config from env vars (survives deploys)
+ENV_CHATS = os.environ.get("REGISTERED_CHATS", TELEGRAM_CHAT_ID)
+ENV_MEDIA_TYPE = os.environ.get("MEDIA_TYPE", "none")
+ENV_MEDIA_FILE_ID = os.environ.get("MEDIA_FILE_ID", "")
+ENV_MEDIA_URL = os.environ.get("MEDIA_URL", "")
+
 ORBIS_HEADERS = {"x-api-key": ORBIS_API_KEY}
 STATS_URL = "https://orbisapi.com/api/provider/stats"
 EARNINGS_URL = "https://orbisapi.com/api/provider/earnings"
@@ -27,13 +33,15 @@ CHATS_FILE = "registered_chats.json"
 PST = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS = [6, 16]
 last_error_time = 0
+processed_updates = set()
 
 
 def load_chats():
     if os.path.exists(CHATS_FILE):
         with open(CHATS_FILE) as f:
             return set(json.load(f))
-    return {TELEGRAM_CHAT_ID}
+    # Fall back to env var on fresh deploy
+    return set(c.strip() for c in ENV_CHATS.split(",") if c.strip())
 
 
 def save_chats(chats):
@@ -45,6 +53,13 @@ def load_media():
     if os.path.exists(MEDIA_FILE):
         with open(MEDIA_FILE) as f:
             return json.load(f)
+    # Fall back to env vars on fresh deploy
+    if ENV_MEDIA_TYPE == "photo" and ENV_MEDIA_FILE_ID:
+        return {"type": "photo", "file_id": ENV_MEDIA_FILE_ID}
+    elif ENV_MEDIA_TYPE == "animation" and ENV_MEDIA_FILE_ID:
+        return {"type": "animation", "file_id": ENV_MEDIA_FILE_ID}
+    elif ENV_MEDIA_TYPE == "url" and ENV_MEDIA_URL:
+        return {"type": "url", "url": ENV_MEDIA_URL}
     return {"type": "none"}
 
 
@@ -154,6 +169,27 @@ def fetch_all():
     return results
 
 
+def flush_update_queue():
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params={"offset": -1, "timeout": 1},
+            timeout=10
+        )
+        updates = r.json().get("result", [])
+        if updates:
+            latest = updates[-1]["update_id"] + 1
+            save_offset(latest)
+            requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": latest, "timeout": 1},
+                timeout=10
+            )
+            print(f"Flushed {len(updates)} pending updates.")
+    except Exception as e:
+        print(f"Flush error: {e}")
+
+
 def load_seen():
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE) as f:
@@ -217,6 +253,7 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
 
 
 def handle_admin_commands(seen):
+    global processed_updates
     offset = load_offset()
     try:
         r = requests.get(
@@ -232,6 +269,11 @@ def handle_admin_commands(seen):
         save_offset(new_offset)
 
         for update in updates:
+            uid = update.get("update_id")
+            if uid in processed_updates:
+                continue
+            processed_updates.add(uid)
+
             msg = update.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
             user_id = str(msg.get("from", {}).get("id", ""))
@@ -273,7 +315,7 @@ def handle_admin_commands(seen):
                 chats = load_chats()
                 chats.add(chat_id)
                 save_chats(chats)
-                send_message("\u2705 Chat added to broadcasts!", chat_id=chat_id)
+                send_message(f"\u2705 Chat added! Remember to also add {chat_id} to your REGISTERED_CHATS Railway variable.", chat_id=chat_id)
                 continue
 
             if text == "/removechat":
@@ -289,15 +331,17 @@ def handle_admin_commands(seen):
                 continue
 
             if text.startswith("/setimage "):
-                save_media({"type": "url", "url": text[len("/setimage "):].strip()})
-                send_message("\u2705 Image URL saved!", chat_id=chat_id)
+                config = {"type": "url", "url": text[len("/setimage "):].strip()}
+                save_media(config)
+                send_message(f"\u2705 Image URL saved!\nTo persist across deploys, set in Railway:\nMEDIA_TYPE=url\nMEDIA_URL={config['url']}", chat_id=chat_id)
                 continue
 
             if text == "/setphoto":
                 reply = msg.get("reply_to_message", {})
                 if reply.get("photo"):
-                    save_media({"type": "photo", "file_id": reply["photo"][-1]["file_id"]})
-                    send_message("\u2705 Photo saved!", chat_id=chat_id)
+                    file_id = reply["photo"][-1]["file_id"]
+                    save_media({"type": "photo", "file_id": file_id})
+                    send_message(f"\u2705 Photo saved!\nTo persist across deploys, set in Railway:\nMEDIA_TYPE=photo\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
                 else:
                     send_message("Reply to a photo with /setphoto to set it.", chat_id=chat_id)
                 continue
@@ -305,8 +349,9 @@ def handle_admin_commands(seen):
             if text == "/setgif":
                 reply = msg.get("reply_to_message", {})
                 if reply.get("animation"):
-                    save_media({"type": "animation", "file_id": reply["animation"]["file_id"]})
-                    send_message("\u2705 GIF saved!", chat_id=chat_id)
+                    file_id = reply["animation"]["file_id"]
+                    save_media({"type": "animation", "file_id": file_id})
+                    send_message(f"\u2705 GIF saved!\nTo persist across deploys, set in Railway:\nMEDIA_TYPE=animation\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
                 else:
                     send_message("Reply to a GIF with /setgif to set it.", chat_id=chat_id)
                 continue
@@ -329,23 +374,6 @@ def handle_admin_commands(seen):
     except Exception as e:
         print(f"Admin command error: {e}")
 
-
-
-def flush_update_queue():
-    """Discard any pending updates so old commands don't fire on startup."""
-    try:
-        r = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-            params={"timeout": 1},
-            timeout=10
-        )
-        updates = r.json().get("result", [])
-        if updates:
-            latest = updates[-1]["update_id"] + 1
-            save_offset(latest)
-            print(f"Flushed {len(updates)} pending updates.")
-    except Exception as e:
-        print(f"Flush error: {e}")
 
 def main():
     print("Orbis Telegram Bot starting...")
