@@ -127,6 +127,7 @@ def main():
     while True:
         try:
             stats     = fetch(STATS_URL)
+print("STATS DATA:", json.dumps(stats))
             subs_data = fetch(SUBSCRIBERS_URL)
 
             try:
