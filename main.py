@@ -3,17 +3,17 @@ import time
 import json
 import os
 
-ORBIS_API_KEY    = os.environ.get("ORBIS_API_KEY", "")
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
+ORBIS_API_KEY = os.environ.get("ORBIS_API_KEY", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-POLL_INTERVAL    = 300
-ERROR_COOLDOWN   = 3600
+POLL_INTERVAL = 300
+ERROR_COOLDOWN = 3600
 
-ORBIS_HEADERS   = {"x-api-key": ORBIS_API_KEY}
-STATS_URL       = "https://orbisapi.com/api/provider/stats"
+ORBIS_HEADERS = {"x-api-key": ORBIS_API_KEY}
+STATS_URL = "https://orbisapi.com/api/provider/stats"
 SUBSCRIBERS_URL = "https://orbisapi.com/api/provider/subscribers"
-APIS_URL        = "https://orbisapi.com/api/provider/apis"
-SEEN_FILE       = "seen_subscribers.json"
+APIS_URL = "https://orbisapi.com/api/provider/apis"
+SEEN_FILE = "seen_subscribers.json"
 last_error_time = 0
 
 
@@ -26,10 +26,8 @@ def send_error(message):
     global last_error_time
     now = time.time()
     if now - last_error_time > ERROR_COOLDOWN:
-        send_telegram(f"⚠️ Orbis Bot error: {message}")
+        send_telegram(f"Warning Orbis Bot error: {message}")
         last_error_time = now
-    else:
-        print(f"Error suppressed: {message}")
 
 
 def fetch(url):
@@ -68,44 +66,50 @@ def get_val(d, *keys):
 
 
 def format_new_sub(sub, stats):
-    total     = get_val(stats, "totalEarned", "total_earned", "totalRevenue")
-    monthly   = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue")
-    pending   = get_val(stats, "pendingPayouts", "pending_payouts", "pendingPayout")
-    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers")
-    name      = sub.get("name") or sub.get("username") or sub.get("email") or "Unknown"
-    api       = sub.get("apiName") or sub.get("api_name") or sub.get("apiId") or "Unknown API"
-    plan      = sub.get("plan") or sub.get("tier") or ""
-    lines = ["🎉 <b>New Subscriber!</b>", "", f"👤 <b>User:</b> {name}", f"📦 <b>API:</b> {api}"]
+    total = get_val(stats, "totalEarned", "total_earned", "totalRevenue", "earnings")
+    monthly = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue", "monthEarnings")
+    pending = get_val(stats, "pendingPayouts", "pending_payouts", "pendingPayout", "pending")
+    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers", "subscribers")
+    name = sub.get("name") or sub.get("username") or sub.get("email") or "Unknown"
+    api = sub.get("apiName") or sub.get("api_name") or sub.get("apiId") or "Unknown API"
+    plan = sub.get("plan") or sub.get("tier") or ""
+    lines = [
+        "New Subscriber!",
+        "",
+        f"User: {name}",
+        f"API: {api}",
+    ]
     if plan:
-        lines.append(f"📋 <b>Plan:</b> {plan}")
+        lines.append(f"Plan: {plan}")
     lines += [
         "",
-        "💰 <b>Earnings Summary</b>",
+        "Earnings Summary",
         f"  Total Earned:      ${total}",
         f"  This Month:        ${monthly}",
         f"  Pending Payout:    ${pending}",
-        f"  Total Subscribers: {sub_count}"
+        f"  Total Subscribers: {sub_count}",
     ]
     return "\n".join(lines)
 
 
 def format_startup(stats, apis_data):
-    total     = get_val(stats, "totalEarned", "total_earned", "totalRevenue")
-    monthly   = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue")
-    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers")
-    apis      = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
+    total = get_val(stats, "totalEarned", "total_earned", "totalRevenue", "earnings")
+    monthly = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue", "monthEarnings")
+    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers", "subscribers")
+    apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
     api_lines = ""
     for a in apis[:5]:
         n = a.get("name") or a.get("apiName") or "Unnamed"
         s = a.get("subscriberCount") or a.get("subscribers") or 0
-        api_lines += f"\n  • {n} — {s} subscribers"
+        api_lines += f"\n  - {n}: {s} subscribers"
     return (
-        "🤖 <b>Orbis Bot Online</b>\n\n"
-        f"💰 Total Earned: ${total}\n"
-        f"📅 This Month:   ${monthly}\n"
-        f"👥 Subscribers:  {sub_count}\n"
-        f"\n📦 <b>Your APIs (top 5):</b>{api_lines}\n\n"
-        f"🔄 Polling every 5 minutes"
+        "Orbis Bot Online\n\n"
+        f"Total Earned: ${total}\n"
+        f"This Month:   ${monthly}\n"
+        f"Subscribers:  {sub_count}\n"
+        f"\nYour APIs (top 5):{api_lines}\n\n"
+        f"Polling every 5 minutes\n\n"
+        f"DEBUG STATS: {json.dumps(stats)}"
     )
 
 
@@ -117,23 +121,18 @@ def main():
     while True:
         try:
             stats = fetch(STATS_URL)
-            print("STATS DATA:", json.dumps(stats))
             subs_data = fetch(SUBSCRIBERS_URL)
-
+            apis_data = []
             try:
                 apis_data = fetch(APIS_URL)
-            except Exception as api_err:
-                print(f"APIs endpoint error (non-fatal): {api_err}")
-                apis_data = []
-
+            except Exception as e2:
+                print(f"APIs error: {e2}")
             current_ids, subs_list = get_subscriber_ids(subs_data)
-
             if first_run:
                 send_telegram(format_startup(stats, apis_data))
                 save_seen(current_ids)
                 seen = current_ids
                 first_run = False
-                print("Startup message sent.")
             else:
                 new_ids = current_ids - seen
                 if new_ids:
@@ -141,20 +140,17 @@ def main():
                         sub = next(
                             (s for s in subs_list if str(
                                 s.get("id") or s.get("userId") or s.get("subscriberId")
-                            ) == uid),
-                            {}
+                            ) == uid), {}
                         )
                         send_telegram(format_new_sub(sub, stats))
-                        print(f"New subscriber alert sent: {uid}")
+                        print(f"New subscriber: {uid}")
                     save_seen(current_ids)
                     seen = current_ids
                 else:
-                    print(f"No new subscribers. Checking again in {POLL_INTERVAL // 60} minutes...")
-
+                    print(f"No new subscribers. Next check in {POLL_INTERVAL // 60} min...")
         except Exception as e:
             print(f"Error: {e}")
             send_error(str(e))
-
         time.sleep(POLL_INTERVAL)
 
 
