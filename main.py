@@ -3,30 +3,23 @@ import time
 import json
 import os
 
-# Config from Railway environment variables
 ORBIS_API_KEY    = os.environ.get("ORBIS_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-POLL_INTERVAL    = 300  # 5 minutes
-ERROR_COOLDOWN   = 3600  # 1 hour between error alerts
+POLL_INTERVAL    = 300
+ERROR_COOLDOWN   = 3600
 
-ORBIS_HEADERS = {"x-orbis-key": ORBIS_API_KEY}
-
+ORBIS_HEADERS   = {"x-orbis-key": ORBIS_API_KEY}
 STATS_URL       = "https://orbisapi.com/api/provider/stats"
 SUBSCRIBERS_URL = "https://orbisapi.com/api/provider/subscribers"
 APIS_URL        = "https://orbisapi.com/api/provider/apis"
-
-SEEN_FILE = "seen_subscribers.json"
+SEEN_FILE       = "seen_subscribers.json"
 last_error_time = 0
 
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    })
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"})
 
 
 def send_error(message):
@@ -36,7 +29,7 @@ def send_error(message):
         send_telegram(f"⚠️ Orbis Bot error: {message}")
         last_error_time = now
     else:
-        print(f"Error suppressed (cooldown active): {message}")
+        print(f"Error suppressed: {message}")
 
 
 def fetch(url):
@@ -67,54 +60,46 @@ def get_subscriber_ids(data):
     return ids, subs
 
 
+def get_val(d, *keys):
+    for k in keys:
+        if d.get(k) is not None:
+            return d[k]
+    return "N/A"
+
+
 def format_new_sub(sub, stats):
-    total     = stats.get("totalEarned", stats.get("total_earned", "N/A"))
-    monthly   = stats.get("thisMonthRevenue", stats.get("monthly_revenue", "N/A"))
-    pending   = stats.get("pendingPayouts", stats.get("pending_payouts", "N/A"))
-    sub_count = stats.get("subscriberCount", stats.get("subscriber_count", "N/A"))
+    total     = get_val(stats, "totalEarned", "total_earned", "totalRevenue")
+    monthly   = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue")
+    pending   = get_val(stats, "pendingPayouts", "pending_payouts", "pendingPayout")
+    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers")
     name      = sub.get("name") or sub.get("username") or sub.get("email") or "Unknown"
     api       = sub.get("apiName") or sub.get("api_name") or sub.get("apiId") or "Unknown API"
     plan      = sub.get("plan") or sub.get("tier") or ""
-
-    lines = [
-        "🎉 <b>New Subscriber!</b>",
-        "",
-        f"👤 <b>User:</b> {name}",
-        f"📦 <b>API:</b> {api}",
-    ]
+    lines = ["🎉 <b>New Subscriber!</b>", "", f"👤 <b>User:</b> {name}", f"📦 <b>API:</b> {api}"]
     if plan:
         lines.append(f"📋 <b>Plan:</b> {plan}")
-    lines += [
-        "",
-        "💰 <b>Earnings Summary</b>",
-        f"  Total Earned:      ${total}",
-        f"  This Month:        ${monthly}",
-        f"  Pending Payout:    ${pending}",
-        f"  Total Subscribers: {sub_count}",
-    ]
+    lines += ["", "💰 <b>Earnings Summary</b>", f"  Total Earned:      ${total}",
+              f"  This Month:        ${monthly}", f"  Pending Payout:    ${pending}",
+              f"  Total Subscribers: {sub_count}"]
     return "\n".join(lines)
 
 
 def format_startup(stats, apis_data):
-    total     = stats.get("totalEarned", stats.get("total_earned", "N/A"))
-    monthly   = stats.get("thisMonthRevenue", stats.get("monthly_revenue", "N/A"))
-    sub_count = stats.get("subscriberCount", stats.get("subscriber_count", "N/A"))
+    total     = get_val(stats, "totalEarned", "total_earned", "totalRevenue")
+    monthly   = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue")
+    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers")
     apis      = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
-
     api_lines = ""
     for a in apis[:5]:
         n = a.get("name") or a.get("apiName") or "Unnamed"
         s = a.get("subscriberCount") or a.get("subscribers") or 0
         api_lines += f"\n  • {n} — {s} subscribers"
-
-    return (
-        "🤖 <b>Orbis Bot Online</b>\n\n"
-        f"💰 Total Earned: ${total}\n"
-        f"📅 This Month:   ${monthly}\n"
-        f"👥 Subscribers:  {sub_count}\n"
-        f"\n📦 <b>Your APIs (top 5):</b>{api_lines}\n\n"
-        f"🔄 Polling every 5 minutes"
-    )
+    return (f"🤖 <b>Orbis Bot Online</b>\n\n"
+            f"💰 Total Earned: ${total}\n"
+            f"📅 This Month:   ${monthly}\n"
+            f"👥 Subscribers:  {sub_count}\n"
+            f"\n📦 <b>Your APIs (top 5):</b>{api_lines}\n\n"
+            f"🔄 Polling every 5 minutes")
 
 
 def main():
@@ -124,15 +109,15 @@ def main():
 
     while True:
         try:
-            stats     = fetch(STATS_URL)
-            print("STATS DATA:", json.dumps(stats))  # debug — remove once fields confirmed
+            stats = fetch(STATS_URL)
+            print("STATS DATA:", json.dumps(stats))
 
             subs_data = fetch(SUBSCRIBERS_URL)
 
             try:
                 apis_data = fetch(APIS_URL)
-            except Exception as e:
-                print(f"APIs endpoint error (non-fatal): {e}")
+            except Exception as api_err:
+                print(f"APIs endpoint error (non-fatal): {api_err}")
                 apis_data = []
 
             current_ids, subs_list = get_subscriber_ids(subs_data)
