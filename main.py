@@ -7,8 +7,8 @@ import os
 ORBIS_API_KEY    = os.environ.get("ORBIS_API_KEY", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-POLL_INTERVAL    = 300  # 5 minutes to avoid rate limiting
-ERROR_COOLDOWN   = 3600  # Only send error alerts once per hour
+POLL_INTERVAL    = 300  # 5 minutes
+ERROR_COOLDOWN   = 3600  # 1 hour between error alerts
 
 ORBIS_HEADERS = {"x-api-key": ORBIS_API_KEY}
 
@@ -17,7 +17,6 @@ SUBSCRIBERS_URL = "https://orbisapi.com/api/provider/subscribers"
 APIS_URL        = "https://orbisapi.com/api/provider/apis"
 
 SEEN_FILE = "seen_subscribers.json"
-
 last_error_time = 0
 
 
@@ -68,11 +67,19 @@ def get_subscriber_ids(data):
     return ids, subs
 
 
+def get_val(d, *keys):
+    """Try multiple possible field names and return the first match."""
+    for k in keys:
+        if d.get(k) is not None:
+            return d[k]
+    return "N/A"
+
+
 def format_new_sub(sub, earnings):
-    total     = earnings.get("totalEarned") or earnings.get("total_earned", "N/A")
-    monthly   = earnings.get("thisMonthRevenue") or earnings.get("monthly_revenue", "N/A")
-    pending   = earnings.get("pendingPayouts") or earnings.get("pending_payouts", "N/A")
-    sub_count = earnings.get("subscriberCount") or earnings.get("subscriber_count", "N/A")
+    total     = get_val(earnings, "totalEarned", "total_earned", "totalRevenue", "total_revenue", "revenue")
+    monthly   = get_val(earnings, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue", "this_month")
+    pending   = get_val(earnings, "pendingPayouts", "pending_payouts", "pendingPayout", "pending")
+    sub_count = get_val(earnings, "subscriberCount", "subscriber_count", "totalSubscribers", "total_subscribers")
     name      = sub.get("name") or sub.get("username") or sub.get("email") or "Unknown"
     api       = sub.get("apiName") or sub.get("api_name") or sub.get("apiId") or "Unknown API"
     plan      = sub.get("plan") or sub.get("tier") or ""
@@ -97,9 +104,13 @@ def format_new_sub(sub, earnings):
 
 
 def format_startup(earnings, apis_data):
-    total     = earnings.get("totalEarned") or earnings.get("total_earned", "N/A")
-    monthly   = earnings.get("thisMonthRevenue") or earnings.get("monthly_revenue", "N/A")
-    sub_count = earnings.get("subscriberCount") or earnings.get("subscriber_count", "N/A")
+    # Debug: print all keys so we can see exact field names in logs
+    print("EARNINGS KEYS:", list(earnings.keys()) if isinstance(earnings, dict) else earnings)
+    print("EARNINGS DATA:", json.dumps(earnings))
+
+    total     = get_val(earnings, "totalEarned", "total_earned", "totalRevenue", "total_revenue", "revenue")
+    monthly   = get_val(earnings, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue", "this_month")
+    sub_count = get_val(earnings, "subscriberCount", "subscriber_count", "totalSubscribers", "total_subscribers")
     apis      = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
 
     api_lines = ""
@@ -128,7 +139,6 @@ def main():
             earnings  = fetch(EARNINGS_URL)
             subs_data = fetch(SUBSCRIBERS_URL)
 
-            # Fetch APIs separately with its own error handling
             try:
                 apis_data = fetch(APIS_URL)
             except Exception as e:
