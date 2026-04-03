@@ -3,7 +3,7 @@ import time
 import json
 import os
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
 
 ORBIS_API_KEY = os.environ.get("ORBIS_API_KEY", "")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -21,13 +21,11 @@ MEDIA_FILE = "media_config.json"
 OFFSET_FILE = "update_offset.json"
 SCHEDULE_FILE = "schedule_state.json"
 
-PST = pytz.timezone("America/Los_Angeles")
-SCHEDULED_HOURS = [6, 16]  # 6 AM and 4 PM PST
+PST = ZoneInfo("America/Los_Angeles")
+SCHEDULED_HOURS = [6, 16]
 
 last_error_time = 0
 
-
-# ─── Media ────────────────────────────────────────────────
 
 def load_media():
     if os.path.exists(MEDIA_FILE):
@@ -41,8 +39,6 @@ def save_media(config):
         json.dump(config, f)
 
 
-# ─── Offset ───────────────────────────────────────────────
-
 def load_offset():
     if os.path.exists(OFFSET_FILE):
         with open(OFFSET_FILE) as f:
@@ -54,8 +50,6 @@ def save_offset(offset):
     with open(OFFSET_FILE, "w") as f:
         json.dump({"offset": offset}, f)
 
-
-# ─── Schedule state ───────────────────────────────────────
 
 def load_schedule_state():
     if os.path.exists(SCHEDULE_FILE):
@@ -74,15 +68,12 @@ def should_send_scheduled():
     current_hour = now_pst.hour
     current_date = now_pst.strftime("%Y-%m-%d")
     state = load_schedule_state()
-
     if current_hour in SCHEDULED_HOURS:
         if not (state["last_sent_hour"] == current_hour and state["last_sent_date"] == current_date):
             save_schedule_state(current_hour, current_date)
             return True
     return False
 
-
-# ─── Telegram senders ─────────────────────────────────────
 
 def get_keyboard():
     return {"inline_keyboard": [[
@@ -95,32 +86,19 @@ def send_with_media(caption, chat_id=None):
     target = chat_id or TELEGRAM_CHAT_ID
     media = load_media()
     base = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
     if media["type"] == "photo":
-        requests.post(f"{base}/sendPhoto", json={
-            "chat_id": target, "photo": media["file_id"],
-            "caption": caption, "reply_markup": get_keyboard()
-        })
+        requests.post(f"{base}/sendPhoto", json={"chat_id": target, "photo": media["file_id"], "caption": caption, "reply_markup": get_keyboard()})
     elif media["type"] == "animation":
-        requests.post(f"{base}/sendAnimation", json={
-            "chat_id": target, "animation": media["file_id"],
-            "caption": caption, "reply_markup": get_keyboard()
-        })
+        requests.post(f"{base}/sendAnimation", json={"chat_id": target, "animation": media["file_id"], "caption": caption, "reply_markup": get_keyboard()})
     elif media["type"] == "url":
-        requests.post(f"{base}/sendPhoto", json={
-            "chat_id": target, "photo": media["url"],
-            "caption": caption, "reply_markup": get_keyboard()
-        })
+        requests.post(f"{base}/sendPhoto", json={"chat_id": target, "photo": media["url"], "caption": caption, "reply_markup": get_keyboard()})
     else:
-        requests.post(f"{base}/sendMessage", json={
-            "chat_id": target, "text": caption, "reply_markup": get_keyboard()
-        })
+        requests.post(f"{base}/sendMessage", json={"chat_id": target, "text": caption, "reply_markup": get_keyboard()})
 
 
 def send_message(text, chat_id=None):
     target = chat_id or TELEGRAM_CHAT_ID
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": target, "text": text})
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": target, "text": text})
 
 
 def send_error(message):
@@ -130,8 +108,6 @@ def send_error(message):
         send_message(f"\u26a0\ufe0f Bot error: {message}")
         last_error_time = now
 
-
-# ─── Orbis fetchers ───────────────────────────────────────
 
 def fetch(url):
     r = requests.get(url, headers=ORBIS_HEADERS, timeout=15)
@@ -160,8 +136,6 @@ def get_subscriber_ids(data):
             ids.add(str(uid))
     return ids, subs
 
-
-# ─── Message formatter ────────────────────────────────────
 
 def format_stats(stats, apis_data, new_sub=None):
     sub_count = stats.get("totalSubscribers", "N/A")
@@ -199,13 +173,10 @@ def format_stats(stats, apis_data, new_sub=None):
     return "\n".join(lines)
 
 
-# ─── Admin command handler ────────────────────────────────
-
 def handle_admin_commands(seen):
     offset = load_offset()
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
-        r = requests.get(url, params={"offset": offset, "timeout": 1}, timeout=10)
+        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", params={"offset": offset, "timeout": 1}, timeout=10)
         updates = r.json().get("result", [])
         if not updates:
             return
@@ -218,7 +189,6 @@ def handle_admin_commands(seen):
             text = msg.get("text", "")
             is_admin = user_id in ADMIN_IDS
 
-            # /schlegelapi — anyone can trigger a status update
             if text == "/schlegelapi":
                 try:
                     stats = fetch(STATS_URL)
@@ -230,77 +200,52 @@ def handle_admin_commands(seen):
                         pass
                     send_with_media(format_stats(stats, apis_data), chat_id=chat_id)
                 except Exception as e:
-                    send_message(f"Error fetching stats: {e}", chat_id=chat_id)
+                    send_message(f"Error: {e}", chat_id=chat_id)
                 continue
 
-            # /help — anyone can see help
             if text == "/help":
-                help_text = (
-                    "Schlegel Orbis Tracker Commands:\n\n"
-                    "/schlegelapi - Get latest stats now\n"
-                    "/help - Show this message\n"
-                )
+                help_text = "Schlegel Orbis Tracker\n\n/schlegelapi - Get latest stats\n/help - Show commands\n"
                 if is_admin:
-                    help_text += (
-                        "\nAdmin Commands:\n"
-                        "/setimage [url] - Set image from URL\n"
-                        "/setphoto - Reply to a photo with this command\n"
-                        "/setgif - Reply to a GIF with this command\n"
-                        "/clearmedia - Remove media\n"
-                        "/status - Bot status\n"
-                    )
+                    help_text += "\nAdmin Commands:\n/setimage [url] - Set image from URL\n/setphoto - Reply to a photo\n/setgif - Reply to a GIF\n/clearmedia - Remove media\n/status - Bot status\n"
                 send_message(help_text, chat_id=chat_id)
                 continue
 
-            # All commands below are admin only
             if not is_admin:
                 continue
 
-            # /setimage [url]
             if text.startswith("/setimage "):
-                new_url = text[len("/setimage "):].strip()
-                save_media({"type": "url", "url": new_url})
+                save_media({"type": "url", "url": text[len("/setimage "):].strip()})
                 send_message("\u2705 Image URL saved!", chat_id=chat_id)
                 continue
 
-            # /setphoto — reply to a photo with this command
             if text == "/setphoto":
                 reply = msg.get("reply_to_message", {})
                 if reply.get("photo"):
-                    file_id = reply["photo"][-1]["file_id"]
-                    save_media({"type": "photo", "file_id": file_id})
+                    save_media({"type": "photo", "file_id": reply["photo"][-1]["file_id"]})
                     send_message("\u2705 Photo saved!", chat_id=chat_id)
                 else:
                     send_message("Reply to a photo with /setphoto to set it.", chat_id=chat_id)
                 continue
 
-            # /setgif — reply to a GIF with this command
             if text == "/setgif":
                 reply = msg.get("reply_to_message", {})
                 if reply.get("animation"):
-                    file_id = reply["animation"]["file_id"]
-                    save_media({"type": "animation", "file_id": file_id})
+                    save_media({"type": "animation", "file_id": reply["animation"]["file_id"]})
                     send_message("\u2705 GIF saved!", chat_id=chat_id)
                 else:
                     send_message("Reply to a GIF with /setgif to set it.", chat_id=chat_id)
                 continue
 
-            # /clearmedia
             if text == "/clearmedia":
                 save_media({"type": "none"})
                 send_message("\u2705 Media cleared.", chat_id=chat_id)
                 continue
 
-            # /status
             if text == "/status":
                 media = load_media()
                 state = load_schedule_state()
                 send_message(
-                    f"Bot Status\n\n"
-                    f"Poll interval: 60s (scheduled 6AM + 4PM PST)\n"
-                    f"Seen subscribers: {len(seen)}\n"
-                    f"Media type: {media.get('type', 'none')}\n"
-                    f"Last scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
+                    f"Bot Status\n\nPoll: 60s | Scheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nLast scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
                     chat_id=chat_id
                 )
                 continue
@@ -310,8 +255,6 @@ def handle_admin_commands(seen):
         print(f"Admin command error: {e}")
 
 
-# ─── Main loop ────────────────────────────────────────────
-
 def main():
     print("Orbis Telegram Bot starting...")
     seen = load_seen()
@@ -320,7 +263,6 @@ def main():
     while True:
         try:
             handle_admin_commands(seen)
-
             stats = fetch(STATS_URL)
             subs_data = fetch(SUBSCRIBERS_URL)
             apis_data = []
@@ -338,21 +280,15 @@ def main():
                 first_run = False
                 print("Startup message sent.")
             else:
-                # Check for new subscribers
                 new_ids = current_ids - seen
                 if new_ids:
                     for uid in new_ids:
-                        sub = next(
-                            (s for s in subs_list if str(
-                                s.get("id") or s.get("userId") or s.get("subscriberId")
-                            ) == uid), {}
-                        )
+                        sub = next((s for s in subs_list if str(s.get("id") or s.get("userId") or s.get("subscriberId")) == uid), {})
                         send_with_media(format_stats(stats, apis_data, new_sub=sub))
                         print(f"New subscriber: {uid}")
                     save_seen(current_ids)
                     seen = current_ids
 
-                # Check scheduled updates (6AM and 4PM PST)
                 if should_send_scheduled():
                     print("Sending scheduled update...")
                     send_with_media(format_stats(stats, apis_data))
