@@ -138,8 +138,11 @@ def get_subscriber_ids(data):
 
 
 def get_total_earned(earnings):
+    for key in earnings:
+        print(f"EARNINGS KEY: {key} = {earnings[key]}")
     return (earnings.get("totalEarned") or earnings.get("total_earned") or
-            earnings.get("totalRevenue") or earnings.get("total") or "0.00")
+            earnings.get("totalRevenue") or earnings.get("total") or
+            earnings.get("earned") or earnings.get("amount") or "0.00")
 
 
 def format_stats(stats, earnings, apis_data, new_sub=None):
@@ -209,10 +212,18 @@ def handle_admin_commands(seen):
                     send_message(f"Error: {e}", chat_id=chat_id)
                 continue
 
+            if text == "/debugearnings" and is_admin:
+                try:
+                    earnings = fetch(EARNINGS_URL)
+                    send_message(f"Raw earnings:\n{json.dumps(earnings, indent=2)}", chat_id=chat_id)
+                except Exception as e:
+                    send_message(f"Error: {e}", chat_id=chat_id)
+                continue
+
             if text == "/help":
                 help_text = "Schlegel Orbis Tracker\n\n/schlegelapi - Get latest stats\n/help - Show commands\n"
                 if is_admin:
-                    help_text += "\nAdmin Only:\n/setimage [url] - Set image from URL\n/setphoto - Reply to a photo with this\n/setgif - Reply to a GIF with this\n/clearmedia - Remove media\n/status - Bot status\n"
+                    help_text += "\nAdmin Only:\n/setimage [url] - Set image from URL\n/setphoto - Reply to a photo with this\n/setgif - Reply to a GIF with this\n/clearmedia - Remove media\n/status - Bot status\n/debugearnings - Show raw earnings data\n"
                 send_message(help_text, chat_id=chat_id)
                 continue
 
@@ -281,7 +292,6 @@ def main():
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
             if first_run:
-                print("EARNINGS RAW:", json.dumps(earnings))
                 send_with_media(format_stats(stats, earnings, apis_data))
                 save_seen(current_ids)
                 seen = current_ids
