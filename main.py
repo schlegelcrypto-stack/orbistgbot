@@ -14,19 +14,26 @@ STATS_URL = "https://orbisapi.com/api/provider/stats"
 SUBSCRIBERS_URL = "https://orbisapi.com/api/provider/subscribers"
 APIS_URL = "https://orbisapi.com/api/provider/apis"
 SEEN_FILE = "seen_subscribers.json"
+IMAGE_URL = "https://i.imgur.com/tlMpKo1.png"
 last_error_time = 0
 
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"})
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    requests.post(url, json={
+        "chat_id": TELEGRAM_CHAT_ID,
+        "photo": IMAGE_URL,
+        "caption": message,
+        "parse_mode": "HTML"
+    })
 
 
 def send_error(message):
     global last_error_time
     now = time.time()
     if now - last_error_time > ERROR_COOLDOWN:
-        send_telegram(f"Warning Orbis Bot error: {message}")
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": f"Warning: {message}"})
         last_error_time = now
 
 
@@ -58,18 +65,10 @@ def get_subscriber_ids(data):
     return ids, subs
 
 
-def get_val(d, *keys):
-    for k in keys:
-        if d.get(k) is not None:
-            return d[k]
-    return "N/A"
-
-
 def format_new_sub(sub, stats):
-    total = get_val(stats, "totalEarned", "total_earned", "totalRevenue", "earnings")
-    monthly = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue", "monthEarnings")
-    pending = get_val(stats, "pendingPayouts", "pending_payouts", "pendingPayout", "pending")
-    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers", "subscribers")
+    sub_count = stats.get("totalSubscribers", "N/A")
+    total_calls = stats.get("totalCalls", "N/A")
+    api_count = stats.get("apiCount", "N/A")
     name = sub.get("name") or sub.get("username") or sub.get("email") or "Unknown"
     api = sub.get("apiName") or sub.get("api_name") or sub.get("apiId") or "Unknown API"
     plan = sub.get("plan") or sub.get("tier") or ""
@@ -83,19 +82,18 @@ def format_new_sub(sub, stats):
         lines.append(f"Plan: {plan}")
     lines += [
         "",
-        "Earnings Summary",
-        f"  Total Earned:      ${total}",
-        f"  This Month:        ${monthly}",
-        f"  Pending Payout:    ${pending}",
+        "Provider Stats",
         f"  Total Subscribers: {sub_count}",
+        f"  Total API Calls:   {total_calls}",
+        f"  APIs Listed:       {api_count}",
     ]
     return "\n".join(lines)
 
 
 def format_startup(stats, apis_data):
-    total = get_val(stats, "totalEarned", "total_earned", "totalRevenue", "earnings")
-    monthly = get_val(stats, "thisMonthRevenue", "monthly_revenue", "monthlyRevenue", "monthEarnings")
-    sub_count = get_val(stats, "subscriberCount", "subscriber_count", "totalSubscribers", "subscribers")
+    sub_count = stats.get("totalSubscribers", "N/A")
+    total_calls = stats.get("totalCalls", "N/A")
+    api_count = stats.get("apiCount", "N/A")
     apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
     api_lines = ""
     for a in apis[:5]:
@@ -104,12 +102,11 @@ def format_startup(stats, apis_data):
         api_lines += f"\n  - {n}: {s} subscribers"
     return (
         "Orbis Bot Online\n\n"
-        f"Total Earned: ${total}\n"
-        f"This Month:   ${monthly}\n"
-        f"Subscribers:  {sub_count}\n"
-        f"\nYour APIs (top 5):{api_lines}\n\n"
-        f"Polling every 5 minutes\n\n"
-        f"DEBUG STATS: {json.dumps(stats)}"
+        f"Total Subscribers: {sub_count}\n"
+        f"Total API Calls:   {total_calls}\n"
+        f"APIs Listed:       {api_count}\n"
+        f"\nTop APIs:{api_lines}\n\n"
+        f"Polling every 5 minutes"
     )
 
 
