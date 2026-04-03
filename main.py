@@ -330,8 +330,26 @@ def handle_admin_commands(seen):
         print(f"Admin command error: {e}")
 
 
+
+def flush_update_queue():
+    """Discard any pending updates so old commands don't fire on startup."""
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params={"timeout": 1},
+            timeout=10
+        )
+        updates = r.json().get("result", [])
+        if updates:
+            latest = updates[-1]["update_id"] + 1
+            save_offset(latest)
+            print(f"Flushed {len(updates)} pending updates.")
+    except Exception as e:
+        print(f"Flush error: {e}")
+
 def main():
     print("Orbis Telegram Bot starting...")
+    flush_update_queue()
     seen = load_seen()
     first_run = True
 
