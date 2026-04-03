@@ -190,7 +190,7 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
         n = a.get("name") or a.get("apiName") or "Unnamed"
         s = a.get("subscriberCount") or a.get("subscribers") or 0
         c = a.get("totalCalls") or a.get("calls") or 0
-        lines.append(f"  - {n}: {s} subs, {c} calls")
+        lines.append(f"  - {n}: {s} subs")
 
     lines += ["", now_pst]
     return "\n".join(lines)
