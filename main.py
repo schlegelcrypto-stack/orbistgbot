@@ -143,6 +143,7 @@ def format_stats(stats, apis_data, new_sub=None):
     api_count = stats.get("apiCount", "N/A")
     earnings = stats.get("totalEarned", stats.get("earnings", "0.00"))
     apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
+    now_pst = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
 
     if new_sub:
         name = new_sub.get("name") or new_sub.get("username") or new_sub.get("email") or "Unknown"
@@ -150,8 +151,7 @@ def format_stats(stats, apis_data, new_sub=None):
         plan = new_sub.get("plan") or new_sub.get("tier") or "Free"
         header = f"\U0001f389 New Subscriber!\n{name} joined {api} ({plan})\n"
     else:
-        now_pst = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
-        header = f"Schlegel Orbis API Tracker\n{now_pst}\n"
+        header = "\u2728 Schlegel Orbis API Tracker \u2728\n"
 
     lines = [
         header,
@@ -170,6 +170,7 @@ def format_stats(stats, apis_data, new_sub=None):
         c = a.get("totalCalls") or a.get("calls") or 0
         lines.append(f"  - {n}: {s} subs, {c} calls")
 
+    lines += ["", now_pst]
     return "\n".join(lines)
 
 
@@ -180,7 +181,6 @@ def handle_admin_commands(seen):
         updates = r.json().get("result", [])
         if not updates:
             return
-
         for update in updates:
             offset = update.get("update_id") + 1
             msg = update.get("message", {})
@@ -206,7 +206,7 @@ def handle_admin_commands(seen):
             if text == "/help":
                 help_text = "Schlegel Orbis Tracker\n\n/schlegelapi - Get latest stats\n/help - Show commands\n"
                 if is_admin:
-                    help_text += "\nAdmin Commands:\n/setimage [url] - Set image from URL\n/setphoto - Reply to a photo\n/setgif - Reply to a GIF\n/clearmedia - Remove media\n/status - Bot status\n"
+                    help_text += "\nAdmin Only:\n/setimage [url] - Set image from URL\n/setphoto - Reply to a photo with this\n/setgif - Reply to a GIF with this\n/clearmedia - Remove media\n/status - Bot status\n"
                 send_message(help_text, chat_id=chat_id)
                 continue
 
@@ -245,7 +245,7 @@ def handle_admin_commands(seen):
                 media = load_media()
                 state = load_schedule_state()
                 send_message(
-                    f"Bot Status\n\nPoll: 60s | Scheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nLast scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
+                    f"Bot Status\n\nScheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nLast scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
                     chat_id=chat_id
                 )
                 continue
