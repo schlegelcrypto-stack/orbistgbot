@@ -393,11 +393,11 @@ def main():
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
             if first_run:
-                broadcast(format_stats(stats, earnings, apis_data))
+                # Silently initialize on startup — no broadcast
                 save_seen(current_ids)
                 seen = current_ids
                 first_run = False
-                print("Startup message sent.")
+                print("Bot initialized silently.")
             else:
                 new_ids = current_ids - seen
                 if new_ids:
