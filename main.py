@@ -161,7 +161,6 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
     api_count = stats.get("apiCount", "N/A")
     total_earned = round(earnings.get("totalEarningsUsdc", 0), 2)
     this_month = round(earnings.get("thisMonthUsdc", 0), 2)
-    last_month = round(earnings.get("lastMonthUsdc", 0), 2)
     apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
     now_pst = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
 
@@ -171,7 +170,7 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
         plan = new_sub.get("plan") or new_sub.get("tier") or "Free"
         header = f"\U0001f389 New Subscriber!\n{name} joined {api} ({plan})\n"
     else:
-        header = "\u2728 Schlegel Orbis API Tracker \u2728\n"
+        header = "Schlegel Orbis API Tracker\n"
 
     lines = [
         header,
@@ -181,7 +180,6 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
         "",
         f"\U0001f4b0 Total Earned:  ${total_earned} USDC",
         f"\U0001f4c5 This Month:    ${this_month} USDC",
-        f"\U0001f4c6 Last Month:    ${last_month} USDC",
         "",
         "Top APIs:",
     ]
@@ -189,7 +187,6 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
     for a in apis[:5]:
         n = a.get("name") or a.get("apiName") or "Unnamed"
         s = a.get("subscriberCount") or a.get("subscribers") or 0
-        c = a.get("totalCalls") or a.get("calls") or 0
         lines.append(f"  - {n}: {s} subs")
 
     lines += ["", now_pst]
@@ -253,14 +250,14 @@ def handle_admin_commands(seen):
                 chats = load_chats()
                 chats.add(chat_id)
                 save_chats(chats)
-                send_message(f"\u2705 Chat added to broadcasts!", chat_id=chat_id)
+                send_message("\u2705 Chat added to broadcasts!", chat_id=chat_id)
                 continue
 
             if text == "/removechat":
                 chats = load_chats()
                 chats.discard(chat_id)
                 save_chats(chats)
-                send_message(f"\u2705 Chat removed from broadcasts.", chat_id=chat_id)
+                send_message("\u2705 Chat removed from broadcasts.", chat_id=chat_id)
                 continue
 
             if text == "/listchats":
