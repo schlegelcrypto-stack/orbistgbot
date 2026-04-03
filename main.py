@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ORBIS_API_KEY = os.environ.get("ORBIS_API_KEY", "")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -133,6 +134,26 @@ def fetch(url):
     return r.json()
 
 
+def fetch_all():
+    urls = {
+        "stats": STATS_URL,
+        "earnings": EARNINGS_URL,
+        "subscribers": SUBSCRIBERS_URL,
+        "apis": APIS_URL,
+    }
+    results = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(fetch, url): key for key, url in urls.items()}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as e:
+                print(f"Error fetching {key}: {e}")
+                results[key] = {}
+    return results
+
+
 def load_seen():
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE) as f:
@@ -221,15 +242,8 @@ def handle_admin_commands(seen):
                 if not is_admin:
                     continue
                 try:
-                    stats = fetch(STATS_URL)
-                    earnings = fetch(EARNINGS_URL)
-                    subs_data = fetch(SUBSCRIBERS_URL)
-                    apis_data = []
-                    try:
-                        apis_data = fetch(APIS_URL)
-                    except Exception:
-                        pass
-                    broadcast(format_stats(stats, earnings, apis_data))
+                    data = fetch_all()
+                    broadcast(format_stats(data["stats"], data["earnings"], data.get("apis", [])))
                 except Exception as e:
                     send_message(f"Error: {e}", chat_id=chat_id)
                 continue
@@ -324,14 +338,11 @@ def main():
     while True:
         try:
             handle_admin_commands(seen)
-            stats = fetch(STATS_URL)
-            earnings = fetch(EARNINGS_URL)
-            subs_data = fetch(SUBSCRIBERS_URL)
-            apis_data = []
-            try:
-                apis_data = fetch(APIS_URL)
-            except Exception as e2:
-                print(f"APIs error: {e2}")
+            data = fetch_all()
+            stats = data.get("stats", {})
+            earnings = data.get("earnings", {})
+            subs_data = data.get("subscribers", {})
+            apis_data = data.get("apis", [])
 
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
