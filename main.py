@@ -21,10 +21,23 @@ SEEN_FILE = "seen_subscribers.json"
 MEDIA_FILE = "media_config.json"
 OFFSET_FILE = "update_offset.json"
 SCHEDULE_FILE = "schedule_state.json"
+CHATS_FILE = "registered_chats.json"
 
 PST = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS = [6, 16]
 last_error_time = 0
+
+
+def load_chats():
+    if os.path.exists(CHATS_FILE):
+        with open(CHATS_FILE) as f:
+            return set(json.load(f))
+    return {TELEGRAM_CHAT_ID}
+
+
+def save_chats(chats):
+    with open(CHATS_FILE, "w") as f:
+        json.dump(list(chats), f)
 
 
 def load_media():
@@ -96,6 +109,11 @@ def send_with_media(caption, chat_id=None):
         requests.post(f"{base}/sendMessage", json={"chat_id": target, "text": caption, "reply_markup": get_keyboard()})
 
 
+def broadcast(caption):
+    for chat_id in load_chats():
+        send_with_media(caption, chat_id=chat_id)
+
+
 def send_message(text, chat_id=None):
     target = chat_id or TELEGRAM_CHAT_ID
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": target, "text": text})
@@ -137,19 +155,13 @@ def get_subscriber_ids(data):
     return ids, subs
 
 
-def get_total_earned(earnings):
-    for key in earnings:
-        print(f"EARNINGS KEY: {key} = {earnings[key]}")
-    return (earnings.get("totalEarned") or earnings.get("total_earned") or
-            earnings.get("totalRevenue") or earnings.get("total") or
-            earnings.get("earned") or earnings.get("amount") or "0.00")
-
-
 def format_stats(stats, earnings, apis_data, new_sub=None):
     sub_count = stats.get("totalSubscribers", "N/A")
     total_calls = stats.get("totalCalls", "N/A")
     api_count = stats.get("apiCount", "N/A")
-    total_earned = get_total_earned(earnings)
+    total_earned = round(earnings.get("totalEarningsUsdc", 0), 2)
+    this_month = round(earnings.get("thisMonthUsdc", 0), 2)
+    last_month = round(earnings.get("lastMonthUsdc", 0), 2)
     apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
     now_pst = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
 
@@ -167,7 +179,9 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
         f"\U0001f4ca Total API Calls:   {total_calls}",
         f"\U0001f517 APIs Listed:       {api_count}",
         "",
-        f"\U0001f4b0 Total Earned: ${total_earned}",
+        f"\U0001f4b0 Total Earned:  ${total_earned} USDC",
+        f"\U0001f4c5 This Month:    ${this_month} USDC",
+        f"\U0001f4c6 Last Month:    ${last_month} USDC",
         "",
         "Top APIs:",
     ]
@@ -194,10 +208,12 @@ def handle_admin_commands(seen):
             msg = update.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
             user_id = str(msg.get("from", {}).get("id", ""))
-            text = msg.get("text", "")
+            text = msg.get("text", "").split("@")[0]
             is_admin = user_id in ADMIN_IDS
 
             if text == "/schlegelapi":
+                if not is_admin:
+                    continue
                 try:
                     stats = fetch(STATS_URL)
                     earnings = fetch(EARNINGS_URL)
@@ -207,27 +223,49 @@ def handle_admin_commands(seen):
                         apis_data = fetch(APIS_URL)
                     except Exception:
                         pass
-                    send_with_media(format_stats(stats, earnings, apis_data), chat_id=chat_id)
-                except Exception as e:
-                    send_message(f"Error: {e}", chat_id=chat_id)
-                continue
-
-            if text == "/debugearnings" and is_admin:
-                try:
-                    earnings = fetch(EARNINGS_URL)
-                    send_message(f"Raw earnings:\n{json.dumps(earnings, indent=2)}", chat_id=chat_id)
+                    broadcast(format_stats(stats, earnings, apis_data))
                 except Exception as e:
                     send_message(f"Error: {e}", chat_id=chat_id)
                 continue
 
             if text == "/help":
-                help_text = "Schlegel Orbis Tracker\n\n/schlegelapi - Get latest stats\n/help - Show commands\n"
+                help_text = "Schlegel Orbis Tracker\n\n/help - Show commands\n"
                 if is_admin:
-                    help_text += "\nAdmin Only:\n/setimage [url] - Set image from URL\n/setphoto - Reply to a photo with this\n/setgif - Reply to a GIF with this\n/clearmedia - Remove media\n/status - Bot status\n/debugearnings - Show raw earnings data\n"
+                    help_text += (
+                        "\nAdmin Only:\n"
+                        "/schlegelapi - Trigger stats to all chats\n"
+                        "/addchat - Add this chat to broadcasts\n"
+                        "/removechat - Remove this chat\n"
+                        "/listchats - Show registered chats\n"
+                        "/setimage [url] - Set image from URL\n"
+                        "/setphoto - Reply to a photo with this\n"
+                        "/setgif - Reply to a GIF with this\n"
+                        "/clearmedia - Remove media\n"
+                        "/status - Bot status\n"
+                    )
                 send_message(help_text, chat_id=chat_id)
                 continue
 
             if not is_admin:
+                continue
+
+            if text == "/addchat":
+                chats = load_chats()
+                chats.add(chat_id)
+                save_chats(chats)
+                send_message(f"\u2705 Chat added to broadcasts!", chat_id=chat_id)
+                continue
+
+            if text == "/removechat":
+                chats = load_chats()
+                chats.discard(chat_id)
+                save_chats(chats)
+                send_message(f"\u2705 Chat removed from broadcasts.", chat_id=chat_id)
+                continue
+
+            if text == "/listchats":
+                chats = load_chats()
+                send_message("Registered chats:\n" + "\n".join(chats), chat_id=chat_id)
                 continue
 
             if text.startswith("/setimage "):
@@ -261,8 +299,9 @@ def handle_admin_commands(seen):
             if text == "/status":
                 media = load_media()
                 state = load_schedule_state()
+                chats = load_chats()
                 send_message(
-                    f"Bot Status\n\nScheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nLast scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
+                    f"Bot Status\n\nScheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nBroadcast chats: {len(chats)}\nLast scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
                     chat_id=chat_id
                 )
                 continue
@@ -292,7 +331,7 @@ def main():
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
             if first_run:
-                send_with_media(format_stats(stats, earnings, apis_data))
+                broadcast(format_stats(stats, earnings, apis_data))
                 save_seen(current_ids)
                 seen = current_ids
                 first_run = False
@@ -302,14 +341,14 @@ def main():
                 if new_ids:
                     for uid in new_ids:
                         sub = next((s for s in subs_list if str(s.get("id") or s.get("userId") or s.get("subscriberId")) == uid), {})
-                        send_with_media(format_stats(stats, earnings, apis_data, new_sub=sub))
+                        broadcast(format_stats(stats, earnings, apis_data, new_sub=sub))
                         print(f"New subscriber: {uid}")
                     save_seen(current_ids)
                     seen = current_ids
 
                 if should_send_scheduled():
                     print("Sending scheduled update...")
-                    send_with_media(format_stats(stats, earnings, apis_data))
+                    broadcast(format_stats(stats, earnings, apis_data))
 
         except Exception as e:
             print(f"Error: {e}")
