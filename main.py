@@ -196,12 +196,20 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
 def handle_admin_commands(seen):
     offset = load_offset()
     try:
-        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", params={"offset": offset, "timeout": 1}, timeout=10)
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params={"offset": offset, "timeout": 1},
+            timeout=10
+        )
         updates = r.json().get("result", [])
         if not updates:
             return
+
+        # Save offset immediately before processing to prevent duplicate handling
+        new_offset = updates[-1]["update_id"] + 1
+        save_offset(new_offset)
+
         for update in updates:
-            offset = update.get("update_id") + 1
             msg = update.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
             user_id = str(msg.get("from", {}).get("id", ""))
@@ -303,7 +311,6 @@ def handle_admin_commands(seen):
                 )
                 continue
 
-        save_offset(offset)
     except Exception as e:
         print(f"Admin command error: {e}")
 
