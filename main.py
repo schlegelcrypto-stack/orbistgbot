@@ -37,10 +37,15 @@ processed_updates = set()
 
 
 def load_chats():
-    if os.path.exists(CHATS_FILE):
-        with open(CHATS_FILE) as f:
-            return set(json.load(f))
-    # Fall back to env var on fresh deploy
+    try:
+        if os.path.exists(CHATS_FILE):
+            with open(CHATS_FILE) as f:
+                data = json.load(f)
+                if data:
+                    return set(data)
+    except Exception:
+        pass
+    # Fall back to env var
     return set(c.strip() for c in ENV_CHATS.split(",") if c.strip())
 
 
@@ -50,10 +55,15 @@ def save_chats(chats):
 
 
 def load_media():
-    if os.path.exists(MEDIA_FILE):
-        with open(MEDIA_FILE) as f:
-            return json.load(f)
-    # Fall back to env vars on fresh deploy
+    try:
+        if os.path.exists(MEDIA_FILE):
+            with open(MEDIA_FILE) as f:
+                data = json.load(f)
+                if data.get("type", "none") != "none":
+                    return data
+    except Exception:
+        pass
+    # Fall back to env vars
     if ENV_MEDIA_TYPE == "photo" and ENV_MEDIA_FILE_ID:
         return {"type": "photo", "file_id": ENV_MEDIA_FILE_ID}
     elif ENV_MEDIA_TYPE == "animation" and ENV_MEDIA_FILE_ID:
