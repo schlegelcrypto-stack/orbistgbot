@@ -12,7 +12,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 ADMIN_IDS = set(os.environ.get("ADMIN_IDS", TELEGRAM_CHAT_ID).split(","))
 ERROR_COOLDOWN = 3600
 
-# Persistent config from env vars (survives deploys)
 ENV_CHATS = os.environ.get("REGISTERED_CHATS", TELEGRAM_CHAT_ID)
 ENV_MEDIA_TYPE = os.environ.get("MEDIA_TYPE", "none")
 ENV_MEDIA_FILE_ID = os.environ.get("MEDIA_FILE_ID", "")
@@ -45,7 +44,6 @@ def load_chats():
                     return set(data)
     except Exception:
         pass
-    # Fall back to env var
     return set(c.strip() for c in ENV_CHATS.split(",") if c.strip())
 
 
@@ -63,7 +61,6 @@ def load_media():
                     return data
     except Exception:
         pass
-    # Fall back to env vars
     if ENV_MEDIA_TYPE == "photo" and ENV_MEDIA_FILE_ID:
         return {"type": "photo", "file_id": ENV_MEDIA_FILE_ID}
     elif ENV_MEDIA_TYPE == "animation" and ENV_MEDIA_FILE_ID:
@@ -79,9 +76,12 @@ def save_media(config):
 
 
 def load_offset():
-    if os.path.exists(OFFSET_FILE):
-        with open(OFFSET_FILE) as f:
-            return json.load(f).get("offset", 0)
+    try:
+        if os.path.exists(OFFSET_FILE):
+            with open(OFFSET_FILE) as f:
+                return json.load(f).get("offset", 0)
+    except Exception:
+        pass
     return 0
 
 
@@ -91,9 +91,12 @@ def save_offset(offset):
 
 
 def load_schedule_state():
-    if os.path.exists(SCHEDULE_FILE):
-        with open(SCHEDULE_FILE) as f:
-            return json.load(f)
+    try:
+        if os.path.exists(SCHEDULE_FILE):
+            with open(SCHEDULE_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
     return {"last_sent_hour": -1, "last_sent_date": ""}
 
 
@@ -195,15 +198,18 @@ def flush_update_queue():
                 params={"offset": latest, "timeout": 1},
                 timeout=10
             )
-            print(f"Flushed {len(updates)} pending updates.")
+            print(f"Flushed {len(updates)} pending updates, offset {latest}")
     except Exception as e:
         print(f"Flush error: {e}")
 
 
 def load_seen():
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE) as f:
-            return set(json.load(f))
+    try:
+        if os.path.exists(SEEN_FILE):
+            with open(SEEN_FILE) as f:
+                return set(json.load(f))
+    except Exception:
+        pass
     return set()
 
 
@@ -290,8 +296,11 @@ def handle_admin_commands(seen):
             text = msg.get("text", "").split("@")[0]
             is_admin = user_id in ADMIN_IDS
 
+            print(f"Command: {text} from user {user_id} (admin={is_admin})")
+
             if text == "/schlegelapi":
                 if not is_admin:
+                    send_message("Not authorized.", chat_id=chat_id)
                     continue
                 try:
                     data = fetch_all()
@@ -325,14 +334,14 @@ def handle_admin_commands(seen):
                 chats = load_chats()
                 chats.add(chat_id)
                 save_chats(chats)
-                send_message(f"\u2705 Chat added! Remember to also add {chat_id} to your REGISTERED_CHATS Railway variable.", chat_id=chat_id)
+                send_message(f"\u2705 Chat added! Also add {chat_id} to REGISTERED_CHATS in Railway.", chat_id=chat_id)
                 continue
 
             if text == "/removechat":
                 chats = load_chats()
                 chats.discard(chat_id)
                 save_chats(chats)
-                send_message("\u2705 Chat removed from broadcasts.", chat_id=chat_id)
+                send_message("\u2705 Chat removed.", chat_id=chat_id)
                 continue
 
             if text == "/listchats":
@@ -343,7 +352,7 @@ def handle_admin_commands(seen):
             if text.startswith("/setimage "):
                 config = {"type": "url", "url": text[len("/setimage "):].strip()}
                 save_media(config)
-                send_message(f"\u2705 Image URL saved!\nTo persist across deploys, set in Railway:\nMEDIA_TYPE=url\nMEDIA_URL={config['url']}", chat_id=chat_id)
+                send_message(f"\u2705 Image URL saved!\nSet in Railway: MEDIA_TYPE=url\nMEDIA_URL={config['url']}", chat_id=chat_id)
                 continue
 
             if text == "/setphoto":
@@ -351,7 +360,7 @@ def handle_admin_commands(seen):
                 if reply.get("photo"):
                     file_id = reply["photo"][-1]["file_id"]
                     save_media({"type": "photo", "file_id": file_id})
-                    send_message(f"\u2705 Photo saved!\nTo persist across deploys, set in Railway:\nMEDIA_TYPE=photo\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
+                    send_message(f"\u2705 Photo saved!\nSet in Railway: MEDIA_TYPE=photo\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
                 else:
                     send_message("Reply to a photo with /setphoto to set it.", chat_id=chat_id)
                 continue
@@ -361,7 +370,7 @@ def handle_admin_commands(seen):
                 if reply.get("animation"):
                     file_id = reply["animation"]["file_id"]
                     save_media({"type": "animation", "file_id": file_id})
-                    send_message(f"\u2705 GIF saved!\nTo persist across deploys, set in Railway:\nMEDIA_TYPE=animation\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
+                    send_message(f"\u2705 GIF saved!\nSet in Railway: MEDIA_TYPE=animation\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
                 else:
                     send_message("Reply to a GIF with /setgif to set it.", chat_id=chat_id)
                 continue
@@ -403,11 +412,10 @@ def main():
             current_ids, subs_list = get_subscriber_ids(subs_data)
 
             if first_run:
-                # Silently initialize on startup — no broadcast
                 save_seen(current_ids)
                 seen = current_ids
                 first_run = False
-                print("Bot initialized silently.")
+                print("Bot initialized.")
             else:
                 new_ids = current_ids - seen
                 if new_ids:
