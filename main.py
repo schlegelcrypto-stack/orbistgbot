@@ -26,7 +26,6 @@ APIS_URL = "https://orbisapi.com/api/provider/apis"
 SEEN_FILE = "seen_subscribers.json"
 MEDIA_FILE = "media_config.json"
 OFFSET_FILE = "update_offset.json"
-SCHEDULE_FILE = "schedule_state.json"
 CHATS_FILE = "registered_chats.json"
 PREV_STATS_FILE = "prev_stats.json"
 
@@ -34,6 +33,11 @@ PST = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS = [6, 16]
 last_error_time = 0
 processed_updates = set()
+
+# In-memory schedule tracking — resets on restart intentionally
+# We use a 4 hour cooldown to prevent double fires on restart
+last_scheduled_send = 0
+SCHEDULE_COOLDOWN = 4 * 3600  # 4 hours minimum between scheduled sends
 
 
 def load_chats():
@@ -91,21 +95,6 @@ def save_offset(offset):
         json.dump({"offset": offset}, f)
 
 
-def load_schedule_state():
-    try:
-        if os.path.exists(SCHEDULE_FILE):
-            with open(SCHEDULE_FILE) as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {"last_sent_hour": -1, "last_sent_date": ""}
-
-
-def save_schedule_state(hour, date_str):
-    with open(SCHEDULE_FILE, "w") as f:
-        json.dump({"last_sent_hour": hour, "last_sent_date": date_str}, f)
-
-
 def load_prev_stats():
     try:
         if os.path.exists(PREV_STATS_FILE):
@@ -129,16 +118,13 @@ def save_prev_stats(stats, earnings):
 
 
 def should_send_scheduled():
+    global last_scheduled_send
     now_pst = datetime.now(PST)
-    current_hour = now_pst.hour
-    current_date = now_pst.strftime("%Y-%m-%d")
-    state = load_schedule_state()
-    if current_hour in SCHEDULED_HOURS:
-        key = f"{current_date}_{current_hour}"
-        if state.get("last_key") != key:
-            save_schedule_state(current_hour, current_date)
-            with open(SCHEDULE_FILE, "w") as f:
-                json.dump({"last_key": key, "last_sent_hour": current_hour, "last_sent_date": current_date}, f)
+    now_ts = time.time()
+    # Only fire during scheduled hours AND if cooldown has passed
+    if now_pst.hour in SCHEDULED_HOURS:
+        if now_ts - last_scheduled_send > SCHEDULE_COOLDOWN:
+            last_scheduled_send = now_ts
             return True
     return False
 
@@ -347,7 +333,8 @@ def handle_admin_commands(seen):
                     continue
                 try:
                     data = fetch_all()
-                    broadcast(format_stats(data["stats"], data["earnings"], data.get("apis", []), show_delta=True))
+                    # Only send to the chat where the command was invoked
+                    send_with_media(format_stats(data["stats"], data["earnings"], data.get("apis", []), show_delta=True), chat_id=chat_id)
                     save_prev_stats(data["stats"], data["earnings"])
                 except Exception as e:
                     send_message(f"Error: {e}", chat_id=chat_id)
@@ -426,10 +413,9 @@ def handle_admin_commands(seen):
 
             if text == "/status":
                 media = load_media()
-                state = load_schedule_state()
                 chats = load_chats()
                 send_message(
-                    f"Bot Status\n\nScheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nBroadcast chats: {len(chats)}\nLast key: {state.get('last_key', 'none')}",
+                    f"Bot Status\n\nScheduled: 6AM + 4PM PST (4hr cooldown)\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nBroadcast chats: {len(chats)}\nAdmin IDs: {ADMIN_IDS}",
                     chat_id=chat_id
                 )
                 continue
@@ -439,8 +425,15 @@ def handle_admin_commands(seen):
 
 
 def main():
+    global last_scheduled_send
     print("Orbis Telegram Bot starting...")
     flush_update_queue()
+
+    # On startup, set last_scheduled_send to now minus 1 hour
+    # This prevents firing immediately on restart if within a scheduled hour
+    # but allows firing if it's been more than 4 hours since last send
+    last_scheduled_send = time.time() - 3 * 3600  # 3 hours ago
+
     seen = load_seen()
     first_run = True
 
@@ -463,10 +456,8 @@ def main():
             else:
                 new_ids = current_ids - seen
                 if new_ids:
-                    for uid in new_ids:
-                        sub = next((s for s in subs_list if str(s.get("id") or s.get("userId") or s.get("subscriberId")) == uid), {})
-                        broadcast(format_stats(stats, earnings, apis_data, new_sub=sub))
-                        print(f"New subscriber: {uid}")
+                    # Update seen list silently — no alert sent
+                    print(f"New subscribers detected: {len(new_ids)} (silent)")
                     save_seen(current_ids)
                     seen = current_ids
 
