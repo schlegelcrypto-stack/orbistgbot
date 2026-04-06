@@ -28,6 +28,7 @@ MEDIA_FILE = "media_config.json"
 OFFSET_FILE = "update_offset.json"
 SCHEDULE_FILE = "schedule_state.json"
 CHATS_FILE = "registered_chats.json"
+PREV_STATS_FILE = "prev_stats.json"
 
 PST = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS = [6, 16]
@@ -105,14 +106,39 @@ def save_schedule_state(hour, date_str):
         json.dump({"last_sent_hour": hour, "last_sent_date": date_str}, f)
 
 
+def load_prev_stats():
+    try:
+        if os.path.exists(PREV_STATS_FILE):
+            with open(PREV_STATS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_prev_stats(stats, earnings):
+    data = {
+        "totalSubscribers": stats.get("totalSubscribers", 0),
+        "totalCalls": stats.get("totalCalls", 0),
+        "apiCount": stats.get("apiCount", 0),
+        "totalEarningsUsdc": earnings.get("totalEarningsUsdc", 0),
+        "thisMonthUsdc": earnings.get("thisMonthUsdc", 0),
+    }
+    with open(PREV_STATS_FILE, "w") as f:
+        json.dump(data, f)
+
+
 def should_send_scheduled():
     now_pst = datetime.now(PST)
     current_hour = now_pst.hour
     current_date = now_pst.strftime("%Y-%m-%d")
     state = load_schedule_state()
     if current_hour in SCHEDULED_HOURS:
-        if not (state["last_sent_hour"] == current_hour and state["last_sent_date"] == current_date):
+        key = f"{current_date}_{current_hour}"
+        if state.get("last_key") != key:
             save_schedule_state(current_hour, current_date)
+            with open(SCHEDULE_FILE, "w") as f:
+                json.dump({"last_key": key, "last_sent_hour": current_hour, "last_sent_date": current_date}, f)
             return True
     return False
 
@@ -198,7 +224,7 @@ def flush_update_queue():
                 params={"offset": latest, "timeout": 1},
                 timeout=10
             )
-            print(f"Flushed {len(updates)} pending updates, offset {latest}")
+            print(f"Flushed {len(updates)} pending updates.")
     except Exception as e:
         print(f"Flush error: {e}")
 
@@ -228,13 +254,30 @@ def get_subscriber_ids(data):
     return ids, subs
 
 
-def format_stats(stats, earnings, apis_data, new_sub=None):
+def delta(current, previous, key, prefix=""):
+    curr = current if isinstance(current, (int, float)) else 0
+    prev = previous.get(key, 0) or 0
+    diff = round(curr - prev, 2)
+    if diff > 0:
+        return f" (+{prefix}{diff})"
+    return ""
+
+
+def format_stats(stats, earnings, apis_data, new_sub=None, show_delta=False):
     sub_count = stats.get("totalSubscribers", "N/A")
     total_calls = stats.get("totalCalls", "N/A")
     api_count = stats.get("apiCount", "N/A")
     total_earned = round(earnings.get("totalEarningsUsdc", 0), 2)
     this_month = round(earnings.get("thisMonthUsdc", 0), 2)
     now_pst = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
+
+    prev = load_prev_stats() if show_delta else {}
+
+    d_subs = delta(sub_count, prev, "totalSubscribers") if show_delta else ""
+    d_calls = delta(total_calls, prev, "totalCalls") if show_delta else ""
+    d_apis = delta(api_count, prev, "apiCount") if show_delta else ""
+    d_earned = delta(total_earned, prev, "totalEarningsUsdc", "$") if show_delta else ""
+    d_month = delta(this_month, prev, "thisMonthUsdc", "$") if show_delta else ""
 
     apis = apis_data if isinstance(apis_data, list) else apis_data.get("apis", [])
     apis = sorted(apis, key=lambda a: a.get("subscriberCount") or a.get("subscribers") or 0, reverse=True)
@@ -249,12 +292,12 @@ def format_stats(stats, earnings, apis_data, new_sub=None):
 
     lines = [
         header,
-        f"\U0001f465 Total Subscribers: {sub_count}",
-        f"\U0001f4ca Total API Calls:   {total_calls}",
-        f"\U0001f517 APIs Listed:       {api_count}",
+        f"\U0001f465 Total Subscribers: {sub_count}{d_subs}",
+        f"\U0001f4ca Total API Calls:   {total_calls}{d_calls}",
+        f"\U0001f517 APIs Listed:       {api_count}{d_apis}",
         "",
-        f"\U0001f4b0 Total Earned:  ${total_earned} USDC",
-        f"\U0001f4c5 This Month:    ${this_month} USDC",
+        f"\U0001f4b0 Total Earned:  ${total_earned} USDC{d_earned}",
+        f"\U0001f4c5 This Month:    ${this_month} USDC{d_month}",
         "",
         "Top APIs:",
     ]
@@ -296,7 +339,7 @@ def handle_admin_commands(seen):
             text = msg.get("text", "").split("@")[0]
             is_admin = user_id in ADMIN_IDS
 
-            print(f"Command: {text} from user {user_id} (admin={is_admin})")
+            print(f"Command: {text} from {user_id} (admin={is_admin})")
 
             if text == "/schlegelapi":
                 if not is_admin:
@@ -304,7 +347,8 @@ def handle_admin_commands(seen):
                     continue
                 try:
                     data = fetch_all()
-                    broadcast(format_stats(data["stats"], data["earnings"], data.get("apis", [])))
+                    broadcast(format_stats(data["stats"], data["earnings"], data.get("apis", []), show_delta=True))
+                    save_prev_stats(data["stats"], data["earnings"])
                 except Exception as e:
                     send_message(f"Error: {e}", chat_id=chat_id)
                 continue
@@ -385,7 +429,7 @@ def handle_admin_commands(seen):
                 state = load_schedule_state()
                 chats = load_chats()
                 send_message(
-                    f"Bot Status\n\nScheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nBroadcast chats: {len(chats)}\nLast scheduled: {state.get('last_sent_date')} hr {state.get('last_sent_hour')}",
+                    f"Bot Status\n\nScheduled: 6AM + 4PM PST\nSubscribers seen: {len(seen)}\nMedia: {media.get('type', 'none')}\nBroadcast chats: {len(chats)}\nLast key: {state.get('last_key', 'none')}",
                     chat_id=chat_id
                 )
                 continue
@@ -428,7 +472,8 @@ def main():
 
                 if should_send_scheduled():
                     print("Sending scheduled update...")
-                    broadcast(format_stats(stats, earnings, apis_data))
+                    broadcast(format_stats(stats, earnings, apis_data, show_delta=True))
+                    save_prev_stats(stats, earnings)
 
         except Exception as e:
             print(f"Error: {e}")
