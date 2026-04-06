@@ -28,11 +28,29 @@ MEDIA_FILE = "media_config.json"
 OFFSET_FILE = "update_offset.json"
 CHATS_FILE = "registered_chats.json"
 PREV_STATS_FILE = "prev_stats.json"
+PROCESSED_FILE = "processed_updates.json"
 
 PST = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS = [6, 16]
 last_error_time = 0
-processed_updates = set()
+def load_processed():
+    try:
+        if os.path.exists(PROCESSED_FILE):
+            with open(PROCESSED_FILE) as f:
+                data = json.load(f)
+                # Only keep last 1000 IDs to prevent file bloat
+                return set(data[-1000:])
+    except Exception:
+        pass
+    return set()
+
+
+def save_processed(ids):
+    try:
+        with open(PROCESSED_FILE, "w") as f:
+            json.dump(list(ids)[-1000:], f)
+    except Exception:
+        pass
 
 # In-memory schedule tracking — resets on restart intentionally
 # We use a 4 hour cooldown to prevent double fires on restart
@@ -298,8 +316,8 @@ def format_stats(stats, earnings, apis_data, new_sub=None, show_delta=False):
 
 
 def handle_admin_commands(seen):
-    global processed_updates
     offset = load_offset()
+    processed_updates = load_processed()
     try:
         r = requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
@@ -318,6 +336,7 @@ def handle_admin_commands(seen):
             if uid in processed_updates:
                 continue
             processed_updates.add(uid)
+            save_processed(processed_updates)
 
             msg = update.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
