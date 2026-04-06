@@ -29,6 +29,25 @@ OFFSET_FILE = "update_offset.json"
 CHATS_FILE = "registered_chats.json"
 PREV_STATS_FILE = "prev_stats.json"
 PROCESSED_FILE = "processed_updates.json"
+LOCK_FILE = "command_lock.json"
+LOCK_TIMEOUT = 15  # seconds
+
+
+def acquire_lock(uid):
+    """Returns True if this instance should process the command."""
+    try:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE) as f:
+                lock = json.load(f)
+            # If lock is for same uid and within timeout, another instance has it
+            if lock.get("uid") == uid and time.time() - lock.get("ts", 0) < LOCK_TIMEOUT:
+                return False
+        # Write lock
+        with open(LOCK_FILE, "w") as f:
+            json.dump({"uid": uid, "ts": time.time()}, f)
+        return True
+    except Exception:
+        return True
 
 PST = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS = [6, 16]
