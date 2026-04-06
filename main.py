@@ -450,15 +450,53 @@ def handle_admin_commands(seen):
         print(f"Admin command error: {e}")
 
 
+def init_from_env():
+    """Always write env vars to files on startup so they survive deploys."""
+    # Write chats from env
+    env_chats = set(c.strip() for c in ENV_CHATS.split(",") if c.strip())
+    if env_chats:
+        existing = set()
+        try:
+            if os.path.exists(CHATS_FILE):
+                with open(CHATS_FILE) as f:
+                    existing = set(json.load(f))
+        except Exception:
+            pass
+        merged = env_chats | existing
+        with open(CHATS_FILE, "w") as f:
+            json.dump(list(merged), f)
+        print(f"Chats initialized: {merged}")
+
+    # Write media from env
+    if ENV_MEDIA_TYPE != "none":
+        existing_media = {"type": "none"}
+        try:
+            if os.path.exists(MEDIA_FILE):
+                with open(MEDIA_FILE) as f:
+                    existing_media = json.load(f)
+        except Exception:
+            pass
+        if existing_media.get("type", "none") == "none":
+            if ENV_MEDIA_TYPE == "animation" and ENV_MEDIA_FILE_ID:
+                config = {"type": "animation", "file_id": ENV_MEDIA_FILE_ID}
+            elif ENV_MEDIA_TYPE == "photo" and ENV_MEDIA_FILE_ID:
+                config = {"type": "photo", "file_id": ENV_MEDIA_FILE_ID}
+            elif ENV_MEDIA_TYPE == "url" and ENV_MEDIA_URL:
+                config = {"type": "url", "url": ENV_MEDIA_URL}
+            else:
+                config = {"type": "none"}
+            with open(MEDIA_FILE, "w") as f:
+                json.dump(config, f)
+            print(f"Media initialized from env: {config['type']}")
+
+
 def main():
     global last_scheduled_send
     print("Orbis Telegram Bot starting...")
+    init_from_env()
     flush_update_queue()
 
-    # On startup, set last_scheduled_send to now minus 1 hour
-    # This prevents firing immediately on restart if within a scheduled hour
-    # but allows firing if it's been more than 4 hours since last send
-    last_scheduled_send = time.time() - 3 * 3600  # 3 hours ago
+    last_scheduled_send = time.time() - 3 * 3600
 
     seen = load_seen()
     first_run = True
