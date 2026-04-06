@@ -335,10 +335,17 @@ def handle_admin_commands(seen):
             uid = update.get("update_id")
             if uid in processed_updates:
                 continue
-            processed_updates.add(uid)
-            save_processed(processed_updates)
 
             msg = update.get("message", {})
+            # Skip messages older than 2 minutes to avoid replaying on restart
+            msg_date = msg.get("date", 0)
+            if time.time() - msg_date > 120:
+                processed_updates.add(uid)
+                save_processed(processed_updates)
+                continue
+
+            processed_updates.add(uid)
+            save_processed(processed_updates)
             chat_id = str(msg.get("chat", {}).get("id", ""))
             user_id = str(msg.get("from", {}).get("id", ""))
             text = msg.get("text", "").split("@")[0]
