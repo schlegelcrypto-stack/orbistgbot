@@ -283,7 +283,7 @@ def format_stats(stats, earnings, apis_data, new_sub=None, show_delta=False):
         n = a.get("name") or a.get("apiName") or "Unnamed"
         s = a.get("subscriberCount") or a.get("subscribers") or 0
         lines.append(f"  - {n}: {s} subs")
-    lines += ["", now_pst]
+    lines += ["", now_pst, "", "*This tracks user 'schlegel' only for fun, this is not a full network tracker"]
     return "\n".join(lines)
 
 
