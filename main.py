@@ -9,27 +9,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, abort
 
 # ── Config ────────────────────────────────────────────────
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-ADMIN_IDS        = set(os.environ.get("ADMIN_IDS", TELEGRAM_CHAT_ID).split(","))
-WEBHOOK_SECRET   = os.environ.get("WEBHOOK_SECRET", "orbissecret123")
-PORT             = int(os.environ.get("PORT", 8080))
-PUBLIC_URL       = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-BOT_USERNAME     = os.environ.get("BOT_USERNAME", "")  # e.g. orbis_tracker_bot
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
+ADMIN_IDS         = set(os.environ.get("ADMIN_IDS", TELEGRAM_CHAT_ID).split(","))
+WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "orbissecret123")
+PORT              = int(os.environ.get("PORT", 8080))
+PUBLIC_URL        = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+BOT_USERNAME      = os.environ.get("BOT_USERNAME", "")
 
-# Schlegel's own config (owner account)
-OWNER_ORBIS_KEY  = os.environ.get("ORBIS_API_KEY", "")
-ENV_CHATS        = os.environ.get("REGISTERED_CHATS", TELEGRAM_CHAT_ID)
-ENV_MEDIA_TYPE   = os.environ.get("MEDIA_TYPE", "none")
+OWNER_ORBIS_KEY   = os.environ.get("ORBIS_API_KEY", "")
+ENV_CHATS         = os.environ.get("REGISTERED_CHATS", TELEGRAM_CHAT_ID)
+ENV_MEDIA_TYPE    = os.environ.get("MEDIA_TYPE", "none")
 ENV_MEDIA_FILE_ID = os.environ.get("MEDIA_FILE_ID", "")
 
 ERROR_COOLDOWN    = 3600
 SCHEDULE_COOLDOWN = 4 * 3600
 
-STATS_URL_BASE    = "https://orbisapi.com/api/provider/stats"
-EARNINGS_URL_BASE = "https://orbisapi.com/api/provider/earnings"
-SUBSCRIBERS_URL   = "https://orbisapi.com/api/provider/subscribers"
+STATS_URL         = "https://orbisapi.com/api/provider/stats"
+EARNINGS_URL      = "https://orbisapi.com/api/provider/earnings"
 APIS_URL          = "https://orbisapi.com/api/provider/apis"
+X402_URL          = "https://orbisapi.com/api/provider/x402-payments"
 
 PST               = ZoneInfo("America/Los_Angeles")
 SCHEDULED_HOURS   = [6, 16]
@@ -102,14 +101,13 @@ def load_prev_stats(user_id):
     try:
         if os.path.exists(PREV_STATS_FILE):
             with open(PREV_STATS_FILE) as f:
-                data = json.load(f)
-                return data.get(str(user_id), {})
+                return json.load(f).get(str(user_id), {})
     except Exception:
         pass
     return {}
 
 
-def save_prev_stats(user_id, stats, earnings):
+def save_prev_stats(user_id, stats, earnings, x402={}):
     data = {}
     try:
         if os.path.exists(PREV_STATS_FILE):
@@ -117,21 +115,23 @@ def save_prev_stats(user_id, stats, earnings):
                 data = json.load(f)
     except Exception:
         pass
+    subs_earned = earnings.get("totalEarningsUsdc", 0)
+    x402_earned = x402.get("summary", {}).get("totalOwedUsdc", 0)
     data[str(user_id)] = {
         "totalSubscribers": stats.get("totalSubscribers", 0),
         "totalCalls": stats.get("totalCalls", 0),
         "apiCount": stats.get("apiCount", 0),
-        "totalEarningsUsdc": earnings.get("totalEarningsUsdc", 0),
-        "thisMonthUsdc": earnings.get("thisMonthUsdc", 0),
+        "subsEarned": subs_earned,
+        "x402Earned": x402_earned,
+        "totalEarned": round(subs_earned + x402_earned, 2),
     }
     with open(PREV_STATS_FILE, "w") as f:
         json.dump(data, f)
 
 
-# ── Init from env ─────────────────────────────────────────
+# ── Init ──────────────────────────────────────────────────
 
 def init_from_env():
-    # Ensure owner is in users
     users = load_users()
     if "owner" not in users and OWNER_ORBIS_KEY:
         users["owner"] = {
@@ -145,7 +145,6 @@ def init_from_env():
         }
         save_users(users)
 
-    # Init chats
     env_chats = set(c.strip() for c in ENV_CHATS.split(",") if c.strip())
     if env_chats:
         existing = set()
@@ -158,6 +157,24 @@ def init_from_env():
         with open(CHATS_FILE, "w") as f:
             json.dump(list(env_chats | existing), f)
 
+    if ENV_MEDIA_TYPE != "none":
+        existing_media = {"type": "none"}
+        try:
+            if os.path.exists("media_config.json"):
+                with open("media_config.json") as f:
+                    existing_media = json.load(f)
+        except Exception:
+            pass
+        if existing_media.get("type", "none") == "none":
+            if ENV_MEDIA_TYPE == "animation" and ENV_MEDIA_FILE_ID:
+                config = {"type": "animation", "file_id": ENV_MEDIA_FILE_ID}
+            elif ENV_MEDIA_TYPE == "photo" and ENV_MEDIA_FILE_ID:
+                config = {"type": "photo", "file_id": ENV_MEDIA_FILE_ID}
+            else:
+                config = {"type": "none"}
+            with open("media_config.json", "w") as f:
+                json.dump(config, f)
+
 
 # ── Orbis fetch ───────────────────────────────────────────
 
@@ -169,12 +186,13 @@ def fetch(url, api_key):
 
 def fetch_user_data(orbis_key):
     urls = {
-        "stats": STATS_URL_BASE,
-        "earnings": EARNINGS_URL_BASE,
+        "stats": STATS_URL,
+        "earnings": EARNINGS_URL,
         "apis": APIS_URL,
+        "x402": X402_URL,
     }
     results = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(fetch, url, orbis_key): key for key, url in urls.items()}
         for future in as_completed(futures):
             key = futures[future]
@@ -188,7 +206,7 @@ def fetch_user_data(orbis_key):
 
 def validate_orbis_key(orbis_key):
     try:
-        r = requests.get(STATS_URL_BASE, headers={"x-api-key": orbis_key}, timeout=10)
+        r = requests.get(STATS_URL, headers={"x-api-key": orbis_key}, timeout=10)
         return r.status_code == 200, r.json() if r.status_code == 200 else {}
     except Exception:
         return False, {}
@@ -213,6 +231,11 @@ def send_with_media(caption, chat_id, media_type="none", media_file_id="", media
         requests.post(f"{base}/sendPhoto", json={"chat_id": chat_id, "photo": media_url, "caption": caption, "reply_markup": get_keyboard()})
     else:
         requests.post(f"{base}/sendMessage", json={"chat_id": chat_id, "text": caption, "reply_markup": get_keyboard()})
+
+
+def broadcast(caption, user):
+    for chat_id in load_chats():
+        send_with_media(caption, chat_id, media_type=user.get("media_type", "none"), media_file_id=user.get("media_file_id", ""), media_url=user.get("media_url", ""))
 
 
 def send_message(text, chat_id):
@@ -242,21 +265,25 @@ def format_user_stats(user_id, user, data, show_delta=False):
     stats    = data.get("stats", {})
     earnings = data.get("earnings", {})
     apis_raw = data.get("apis", [])
+    x402     = data.get("x402", {})
 
     sub_count    = stats.get("totalSubscribers", "N/A")
     total_calls  = stats.get("totalCalls", "N/A")
     api_count    = stats.get("apiCount", "N/A")
-    total_earned = round(earnings.get("totalEarningsUsdc", 0), 2)
-    this_month   = round(earnings.get("thisMonthUsdc", 0), 2)
+    subs_earned  = round(earnings.get("totalEarningsUsdc", 0), 2)
+    x402_earned  = round(x402.get("summary", {}).get("totalOwedUsdc", 0), 2)
+    total_earned = round(subs_earned + x402_earned, 2)
     now_pst      = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
     name         = user.get("name", "Unknown")
 
-    prev     = load_prev_stats(user_id) if show_delta else {}
-    d_subs   = delta(sub_count, prev, "totalSubscribers") if show_delta else ""
-    d_calls  = delta(total_calls, prev, "totalCalls") if show_delta else ""
-    d_apis   = delta(api_count, prev, "apiCount") if show_delta else ""
-    d_earned = delta(total_earned, prev, "totalEarningsUsdc", "$") if show_delta else ""
-    d_month  = delta(this_month, prev, "thisMonthUsdc", "$") if show_delta else ""
+    prev       = load_prev_stats(user_id) if show_delta else {}
+    d_subs     = delta(sub_count, prev, "totalSubscribers") if show_delta else ""
+    d_calls    = delta(total_calls, prev, "totalCalls") if show_delta else ""
+    d_apis     = delta(api_count, prev, "apiCount") if show_delta else ""
+    d_sub_earn = delta(subs_earned, prev, "subsEarned", "$") if show_delta else ""
+    d_x402     = delta(x402_earned, prev, "x402Earned", "$") if show_delta else ""
+    prev_total = round((prev.get("subsEarned", 0) or 0) + (prev.get("x402Earned", 0) or 0), 2)
+    d_total    = f" (+${round(total_earned - prev_total, 2)})" if show_delta and total_earned > prev_total else ""
 
     apis = apis_raw if isinstance(apis_raw, list) else apis_raw.get("apis", [])
     apis = sorted(apis, key=lambda a: a.get("subscriberCount") or a.get("subscribers") or 0, reverse=True)
@@ -267,8 +294,9 @@ def format_user_stats(user_id, user, data, show_delta=False):
         f"\U0001f4ca Total API Calls:   {total_calls}{d_calls}",
         f"\U0001f517 APIs Listed:       {api_count}{d_apis}",
         "",
-        f"\U0001f4b0 Total Earned:  ${total_earned} USDC{d_earned}",
-        f"\U0001f4c5 This Month:    ${this_month} USDC{d_month}",
+        f"\U0001f4b0 Subs Earned:   ${subs_earned} USDC{d_sub_earn}",
+        f"\u26a1 x402 Earned:   ${x402_earned} USDC{d_x402}",
+        f"\U0001f4ca Total Earned:  ${total_earned} USDC{d_total}",
         "",
         "Top APIs:",
     ]
@@ -283,17 +311,11 @@ def format_user_stats(user_id, user, data, show_delta=False):
 
 def broadcast_user(user_id, user, show_delta=False):
     try:
-        data = fetch_user_data(user.get("orbis_key", ""))
+        data    = fetch_user_data(user.get("orbis_key", ""))
         caption = format_user_stats(user_id, user, data, show_delta=show_delta)
-        for chat_id in load_chats():
-            send_with_media(
-                caption, chat_id,
-                media_type=user.get("media_type", "none"),
-                media_file_id=user.get("media_file_id", ""),
-                media_url=user.get("media_url", "")
-            )
+        broadcast(caption, user)
         if show_delta:
-            save_prev_stats(user_id, data.get("stats", {}), data.get("earnings", {}))
+            save_prev_stats(user_id, data.get("stats", {}), data.get("earnings", {}), data.get("x402", {}))
     except Exception as e:
         print(f"Error broadcasting user {user_id}: {e}")
 
@@ -310,26 +332,21 @@ def handle_command(msg):
 
     print(f"Command: {text} from {user_id} ({username}) in {chat_id}")
 
-    # ── /start ─────────────────────────────────────────────
     if text.startswith("/start"):
         if is_private:
             send_message(
                 f"👋 Welcome to the Orbis API Tracker!\n\n"
-                f"To add your stats to the tracker:\n\n"
+                f"To add your stats:\n\n"
                 f"1\ufe0f\u20e3 Get your API key from orbisapi.com\n"
                 f"   \u2192 Provider Dashboard \u2192 Generate API Key\n\n"
-                f"2\ufe0f\u20e3 Send your key here:\n"
-                f"   /register YOUR_API_KEY\n\n"
-                f"3\ufe0f\u20e3 Set your display name:\n"
-                f"   /setname Your Name\n\n"
-                f"4\ufe0f\u20e3 Set your GIF (reply to a GIF with):\n"
-                f"   /mygif\n\n"
+                f"2\ufe0f\u20e3 Send: /register YOUR_API_KEY\n\n"
+                f"3\ufe0f\u20e3 Set your name: /setname Your Name\n\n"
+                f"4\ufe0f\u20e3 Set your GIF: send a GIF then reply /mygif\n\n"
                 f"Type /help to see all commands.",
                 chat_id=chat_id
             )
         return
 
-    # ── /addme ─────────────────────────────────────────────
     if text == "/addme":
         bot_link = f"https://t.me/{BOT_USERNAME}?start=register" if BOT_USERNAME else "the bot directly"
         send_message(
@@ -341,10 +358,9 @@ def handle_command(msg):
         )
         return
 
-    # ── /register ──────────────────────────────────────────
     if text.startswith("/register "):
         if not is_private:
-            send_message("\u26a0\ufe0f Please register privately — message me directly to keep your API key safe!", chat_id=chat_id)
+            send_message("\u26a0\ufe0f Please register privately to keep your API key safe!", chat_id=chat_id)
             return
         orbis_key = text[len("/register "):].strip()
         send_message("\u23f3 Validating your API key...", chat_id=chat_id)
@@ -352,102 +368,80 @@ def handle_command(msg):
         if not valid:
             send_message("\u274c Invalid API key. Please check and try again.", chat_id=chat_id)
             return
-        existing = get_user(user_id)
-        user_data = existing or {}
-        user_data.update({
+        existing  = get_user(user_id) or {}
+        user_data = {
             "user_id": user_id,
             "orbis_key": orbis_key,
-            "name": user_data.get("name", username),
-            "media_type": user_data.get("media_type", "none"),
-            "media_file_id": user_data.get("media_file_id", ""),
-            "media_url": user_data.get("media_url", ""),
-        })
+            "name": existing.get("name", username),
+            "media_type": existing.get("media_type", "none"),
+            "media_file_id": existing.get("media_file_id", ""),
+            "media_url": existing.get("media_url", ""),
+        }
         save_user(user_id, user_data)
-        sub_count = stats.get("totalSubscribers", "?")
-        api_count = stats.get("apiCount", "?")
         send_message(
-            f"\u2705 Registered successfully!\n\n"
-            f"📊 Current stats:\n"
-            f"  Subscribers: {sub_count}\n"
-            f"  APIs Listed: {api_count}\n\n"
-            f"Next steps:\n"
-            f"/setname Your Name — set display name\n"
-            f"/mygif — reply to a GIF to set your image\n"
-            f"/mystats — preview your tracker card",
+            f"\u2705 Registered!\n\n"
+            f"Subscribers: {stats.get('totalSubscribers','?')} | APIs: {stats.get('apiCount','?')}\n\n"
+            f"/setname Your Name\n/mygif — reply to a GIF\n/mystats — preview your card",
             chat_id=chat_id
         )
         return
 
-    # ── /setname ───────────────────────────────────────────
     if text.startswith("/setname "):
         user = get_user(user_id)
         if not user:
-            send_message("You're not registered yet. Use /register first.", chat_id=chat_id)
+            send_message("Not registered. Use /register first.", chat_id=chat_id)
             return
-        name = text[len("/setname "):].strip()
-        user["name"] = name
+        user["name"] = text[len("/setname "):].strip()
         save_user(user_id, user)
-        send_message(f"\u2705 Display name set to: {name}", chat_id=chat_id)
+        send_message(f"\u2705 Name set to: {user['name']}", chat_id=chat_id)
         return
 
-    # ── /mygif ─────────────────────────────────────────────
     if text == "/mygif":
         user = get_user(user_id)
         if not user:
-            send_message("You're not registered yet. Use /register first.", chat_id=chat_id)
+            send_message("Not registered. Use /register first.", chat_id=chat_id)
             return
         reply = msg.get("reply_to_message", {})
         if reply.get("animation"):
-            file_id = reply["animation"]["file_id"]
-            user["media_type"] = "animation"
-            user["media_file_id"] = file_id
+            user["media_type"]    = "animation"
+            user["media_file_id"] = reply["animation"]["file_id"]
             save_user(user_id, user)
-            send_message("\u2705 GIF saved! It will show with your tracker card.", chat_id=chat_id)
+            send_message("\u2705 GIF saved!", chat_id=chat_id)
         else:
             send_message("Reply to a GIF with /mygif to set it.", chat_id=chat_id)
         return
 
-    # ── /myphoto ───────────────────────────────────────────
     if text == "/myphoto":
         user = get_user(user_id)
         if not user:
-            send_message("You're not registered yet. Use /register first.", chat_id=chat_id)
+            send_message("Not registered. Use /register first.", chat_id=chat_id)
             return
         reply = msg.get("reply_to_message", {})
         if reply.get("photo"):
-            file_id = reply["photo"][-1]["file_id"]
-            user["media_type"] = "photo"
-            user["media_file_id"] = file_id
+            user["media_type"]    = "photo"
+            user["media_file_id"] = reply["photo"][-1]["file_id"]
             save_user(user_id, user)
-            send_message("\u2705 Photo saved! It will show with your tracker card.", chat_id=chat_id)
+            send_message("\u2705 Photo saved!", chat_id=chat_id)
         else:
             send_message("Reply to a photo with /myphoto to set it.", chat_id=chat_id)
         return
 
-    # ── /mystats ───────────────────────────────────────────
     if text == "/mystats":
         user = get_user(user_id)
         if not user:
-            send_message("You're not registered yet. Use /register first.", chat_id=chat_id)
+            send_message("Not registered. Use /register first.", chat_id=chat_id)
             return
         send_message("\u23f3 Fetching your stats...", chat_id=chat_id)
-        data = fetch_user_data(user["orbis_key"])
+        data    = fetch_user_data(user["orbis_key"])
         caption = format_user_stats(user_id, user, data)
-        send_with_media(
-            caption, chat_id,
-            media_type=user.get("media_type", "none"),
-            media_file_id=user.get("media_file_id", ""),
-            media_url=user.get("media_url", "")
-        )
+        send_with_media(caption, chat_id, media_type=user.get("media_type","none"), media_file_id=user.get("media_file_id",""))
         return
 
-    # ── /unregister ────────────────────────────────────────
     if text == "/unregister":
         delete_user(user_id)
-        send_message("\u2705 You have been removed from the tracker.", chat_id=chat_id)
+        send_message("\u2705 Removed from tracker.", chat_id=chat_id)
         return
 
-    # ── /help ──────────────────────────────────────────────
     if text == "/help":
         if is_private:
             help_text = (
@@ -457,14 +451,14 @@ def handle_command(msg):
                 "/mygif - Reply to a GIF to set your image\n"
                 "/myphoto - Reply to a photo to set your image\n"
                 "/mystats - Preview your tracker card\n"
-                "/unregister - Remove yourself from tracker\n"
-                "/help - Show this message\n"
+                "/unregister - Remove yourself\n"
+                "/help - Show commands\n"
             )
         else:
             help_text = (
                 "Orbis Tracker Commands\n\n"
-                "/addme - Get instructions to join the tracker\n"
-                "/help - Show this message\n"
+                "/addme - Join the tracker privately\n"
+                "/help - Show commands\n"
             )
         if is_admin:
             help_text += (
@@ -473,25 +467,24 @@ def handle_command(msg):
                 "/broadcastall - Post all users to community\n"
                 "/addchat - Add this chat to broadcasts\n"
                 "/removechat - Remove this chat\n"
-                "/listchats - Show registered chats\n"
+                "/listchats - Show chats\n"
                 "/listusers - Show registered users\n"
-                "/status - Bot status\n"
                 "/setgif - Reply to GIF (owner media)\n"
                 "/setphoto - Reply to photo (owner media)\n"
+                "/status - Bot status\n"
             )
         send_message(help_text, chat_id=chat_id)
         return
 
-    # ── Admin commands ─────────────────────────────────────
     if not is_admin:
         return
 
     if text == "/schlegelapi":
         user = get_user("owner") or {"orbis_key": OWNER_ORBIS_KEY, "name": "schlegel", "media_type": ENV_MEDIA_TYPE, "media_file_id": ENV_MEDIA_FILE_ID}
-        data = fetch_user_data(user["orbis_key"])
+        data    = fetch_user_data(user["orbis_key"])
         caption = format_user_stats("owner", user, data, show_delta=True)
-        send_with_media(caption, chat_id, media_type=user.get("media_type", "none"), media_file_id=user.get("media_file_id", ""))
-        save_prev_stats("owner", data.get("stats", {}), data.get("earnings", {}))
+        send_with_media(caption, chat_id, media_type=user.get("media_type","none"), media_file_id=user.get("media_file_id",""))
+        save_prev_stats("owner", data.get("stats",{}), data.get("earnings",{}), data.get("x402",{}))
         return
 
     if text == "/broadcastall":
@@ -512,7 +505,7 @@ def handle_command(msg):
             return
         lines = [f"Registered users ({len(users)}):"]
         for uid, u in users.items():
-            lines.append(f"  - {u.get('name', 'Unknown')} (id: {uid})")
+            lines.append(f"  - {u.get('name','Unknown')} (id: {uid})")
         send_message("\n".join(lines), chat_id=chat_id)
         return
 
@@ -520,7 +513,7 @@ def handle_command(msg):
         chats = load_chats()
         chats.add(chat_id)
         save_chats(chats)
-        send_message(f"\u2705 Chat added to broadcasts!", chat_id=chat_id)
+        send_message(f"\u2705 Chat added! Also add {chat_id} to REGISTERED_CHATS in Railway.", chat_id=chat_id)
         return
 
     if text == "/removechat":
@@ -540,7 +533,7 @@ def handle_command(msg):
             file_id = reply["animation"]["file_id"]
             users = load_users()
             if "owner" in users:
-                users["owner"]["media_type"] = "animation"
+                users["owner"]["media_type"]    = "animation"
                 users["owner"]["media_file_id"] = file_id
                 save_users(users)
             send_message(f"\u2705 Owner GIF saved!\nRailway: MEDIA_TYPE=animation\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
@@ -554,7 +547,7 @@ def handle_command(msg):
             file_id = reply["photo"][-1]["file_id"]
             users = load_users()
             if "owner" in users:
-                users["owner"]["media_type"] = "photo"
+                users["owner"]["media_type"]    = "photo"
                 users["owner"]["media_file_id"] = file_id
                 save_users(users)
             send_message(f"\u2705 Owner photo saved!\nRailway: MEDIA_TYPE=photo\nMEDIA_FILE_ID={file_id}", chat_id=chat_id)
@@ -563,16 +556,16 @@ def handle_command(msg):
         return
 
     if text == "/status":
-        users  = load_users()
-        chats  = load_chats()
+        users = load_users()
+        chats = load_chats()
         send_message(
-            f"Bot Status\n\nMode: Webhook\nScheduled: 6AM + 4PM PST\nRegistered users: {len(users)}\nBroadcast chats: {len(chats)}\nAdmin IDs: {ADMIN_IDS}\nBot: @{BOT_USERNAME}",
+            f"Bot Status\n\nMode: Webhook\nScheduled: 6AM + 4PM PST\nUsers: {len(users)}\nChats: {len(chats)}\nAdmin IDs: {ADMIN_IDS}\nBot: @{BOT_USERNAME}",
             chat_id=chat_id
         )
         return
 
 
-# ── Webhook endpoint ──────────────────────────────────────
+# ── Webhook ───────────────────────────────────────────────
 
 @app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
 def webhook():
@@ -600,7 +593,7 @@ def scheduler_loop():
         try:
             now_pst = datetime.now(PST)
             if now_pst.hour in SCHEDULED_HOURS and time.time() - last_scheduled_send > SCHEDULE_COOLDOWN:
-                print("Sending scheduled updates for all users...")
+                print("Sending scheduled updates...")
                 users = load_users()
                 for uid, user in users.items():
                     broadcast_user(uid, user, show_delta=True)
@@ -609,7 +602,6 @@ def scheduler_loop():
         except Exception as e:
             print(f"Scheduler error: {e}")
             send_error(str(e))
-
         time.sleep(60)
 
 
