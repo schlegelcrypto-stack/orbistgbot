@@ -21,6 +21,7 @@ OWNER_ORBIS_KEY   = os.environ.get("ORBIS_API_KEY", "")
 ENV_CHATS         = os.environ.get("REGISTERED_CHATS", TELEGRAM_CHAT_ID)
 ENV_MEDIA_TYPE    = os.environ.get("MEDIA_TYPE", "none")
 ENV_MEDIA_FILE_ID = os.environ.get("MEDIA_FILE_ID", "")
+ENV_USERS_CONFIG  = os.environ.get("USERS_CONFIG", "")
 
 ERROR_COOLDOWN    = 3600
 SCHEDULE_COOLDOWN = 4 * 3600
@@ -36,7 +37,6 @@ SCHEDULED_HOURS   = [6, 16]
 USERS_FILE        = "users.json"
 CHATS_FILE        = "registered_chats.json"
 PREV_STATS_FILE   = "prev_stats.json"
-SEEN_FILE         = "seen_subscribers.json"
 
 app = Flask(__name__)
 last_error_time     = 0
@@ -49,9 +49,17 @@ def load_users():
     try:
         if os.path.exists(USERS_FILE):
             with open(USERS_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
+                if data:
+                    return data
     except Exception:
         pass
+    # Fall back to USERS_CONFIG env var
+    if ENV_USERS_CONFIG:
+        try:
+            return json.loads(ENV_USERS_CONFIG)
+        except Exception as e:
+            print(f"Error parsing USERS_CONFIG: {e}")
     return {}
 
 
@@ -132,7 +140,24 @@ def save_prev_stats(user_id, stats, earnings, x402={}):
 # ── Init ──────────────────────────────────────────────────
 
 def init_from_env():
-    users = load_users()
+    # Restore users from env var if file is missing/empty
+    users = {}
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE) as f:
+                users = json.load(f)
+        except Exception:
+            pass
+
+    if not users and ENV_USERS_CONFIG:
+        try:
+            users = json.loads(ENV_USERS_CONFIG)
+            save_users(users)
+            print(f"Restored {len(users)} users from USERS_CONFIG env var")
+        except Exception as e:
+            print(f"Error restoring users: {e}")
+
+    # Ensure owner exists
     if "owner" not in users and OWNER_ORBIS_KEY:
         users["owner"] = {
             "user_id": TELEGRAM_CHAT_ID,
@@ -145,6 +170,7 @@ def init_from_env():
         }
         save_users(users)
 
+    # Init chats
     env_chats = set(c.strip() for c in ENV_CHATS.split(",") if c.strip())
     if env_chats:
         existing = set()
@@ -156,24 +182,6 @@ def init_from_env():
             pass
         with open(CHATS_FILE, "w") as f:
             json.dump(list(env_chats | existing), f)
-
-    if ENV_MEDIA_TYPE != "none":
-        existing_media = {"type": "none"}
-        try:
-            if os.path.exists("media_config.json"):
-                with open("media_config.json") as f:
-                    existing_media = json.load(f)
-        except Exception:
-            pass
-        if existing_media.get("type", "none") == "none":
-            if ENV_MEDIA_TYPE == "animation" and ENV_MEDIA_FILE_ID:
-                config = {"type": "animation", "file_id": ENV_MEDIA_FILE_ID}
-            elif ENV_MEDIA_TYPE == "photo" and ENV_MEDIA_FILE_ID:
-                config = {"type": "photo", "file_id": ENV_MEDIA_FILE_ID}
-            else:
-                config = {"type": "none"}
-            with open("media_config.json", "w") as f:
-                json.dump(config, f)
 
 
 # ── Orbis fetch ───────────────────────────────────────────
@@ -235,7 +243,7 @@ def send_with_media(caption, chat_id, media_type="none", media_file_id="", media
 
 def broadcast(caption, user):
     for chat_id in load_chats():
-        send_with_media(caption, chat_id, media_type=user.get("media_type", "none"), media_file_id=user.get("media_file_id", ""), media_url=user.get("media_url", ""))
+        send_with_media(caption, chat_id, media_type=user.get("media_type","none"), media_file_id=user.get("media_file_id",""), media_url=user.get("media_url",""))
 
 
 def send_message(text, chat_id):
@@ -276,14 +284,14 @@ def format_user_stats(user_id, user, data, show_delta=False):
     now_pst      = datetime.now(PST).strftime("%b %d, %Y %I:%M %p PST")
     name         = user.get("name", "Unknown")
 
-    prev       = load_prev_stats(user_id) if show_delta else {}
-    d_subs     = delta(sub_count, prev, "totalSubscribers") if show_delta else ""
-    d_calls    = delta(total_calls, prev, "totalCalls") if show_delta else ""
-    d_apis     = delta(api_count, prev, "apiCount") if show_delta else ""
-    d_sub_earn = delta(subs_earned, prev, "subsEarned", "$") if show_delta else ""
-    d_x402     = delta(x402_earned, prev, "x402Earned", "$") if show_delta else ""
-    prev_total = round((prev.get("subsEarned", 0) or 0) + (prev.get("x402Earned", 0) or 0), 2)
-    d_total    = f" (+${round(total_earned - prev_total, 2)})" if show_delta and total_earned > prev_total else ""
+    prev        = load_prev_stats(user_id) if show_delta else {}
+    d_subs      = delta(sub_count, prev, "totalSubscribers") if show_delta else ""
+    d_calls     = delta(total_calls, prev, "totalCalls") if show_delta else ""
+    d_apis      = delta(api_count, prev, "apiCount") if show_delta else ""
+    d_sub_earn  = delta(subs_earned, prev, "subsEarned", "$") if show_delta else ""
+    d_x402      = delta(x402_earned, prev, "x402Earned", "$") if show_delta else ""
+    prev_total  = round((prev.get("subsEarned", 0) or 0) + (prev.get("x402Earned", 0) or 0), 2)
+    d_total     = f" (+${round(total_earned - prev_total, 2)})" if show_delta and total_earned > prev_total else ""
 
     apis = apis_raw if isinstance(apis_raw, list) else apis_raw.get("apis", [])
     apis = sorted(apis, key=lambda a: a.get("subscriberCount") or a.get("subscribers") or 0, reverse=True)
@@ -315,7 +323,7 @@ def broadcast_user(user_id, user, show_delta=False):
         caption = format_user_stats(user_id, user, data, show_delta=show_delta)
         broadcast(caption, user)
         if show_delta:
-            save_prev_stats(user_id, data.get("stats", {}), data.get("earnings", {}), data.get("x402", {}))
+            save_prev_stats(user_id, data.get("stats",{}), data.get("earnings",{}), data.get("x402",{}))
     except Exception as e:
         print(f"Error broadcasting user {user_id}: {e}")
 
@@ -323,11 +331,11 @@ def broadcast_user(user_id, user, show_delta=False):
 # ── Command handler ───────────────────────────────────────
 
 def handle_command(msg):
-    chat_id  = str(msg.get("chat", {}).get("id", ""))
-    user_id  = str(msg.get("from", {}).get("id", ""))
-    username = msg.get("from", {}).get("username", "") or msg.get("from", {}).get("first_name", "User")
-    text     = msg.get("text", "").split("@")[0].strip()
-    is_admin = user_id in ADMIN_IDS
+    chat_id    = str(msg.get("chat", {}).get("id", ""))
+    user_id    = str(msg.get("from", {}).get("id", ""))
+    username   = msg.get("from", {}).get("username", "") or msg.get("from", {}).get("first_name", "User")
+    text       = msg.get("text", "").split("@")[0].strip()
+    is_admin   = user_id in ADMIN_IDS
     is_private = msg.get("chat", {}).get("type") == "private"
 
     print(f"Command: {text} from {user_id} ({username}) in {chat_id}")
@@ -336,7 +344,6 @@ def handle_command(msg):
         if is_private:
             send_message(
                 f"👋 Welcome to the Orbis API Tracker!\n\n"
-                f"To add your stats:\n\n"
                 f"1\ufe0f\u20e3 Get your API key from orbisapi.com\n"
                 f"   \u2192 Provider Dashboard \u2192 Generate API Key\n\n"
                 f"2\ufe0f\u20e3 Send: /register YOUR_API_KEY\n\n"
@@ -351,8 +358,7 @@ def handle_command(msg):
         bot_link = f"https://t.me/{BOT_USERNAME}?start=register" if BOT_USERNAME else "the bot directly"
         send_message(
             f"👋 Want to add your Orbis stats to this tracker?\n\n"
-            f"Message the bot privately to get started:\n"
-            f"👉 {bot_link}\n\n"
+            f"Message the bot privately:\n👉 {bot_link}\n\n"
             f"Your API key stays private!",
             chat_id=chat_id
         )
@@ -465,6 +471,7 @@ def handle_command(msg):
                 "\nAdmin Only:\n"
                 "/schlegelapi - Post your stats here\n"
                 "/broadcastall - Post all users to community\n"
+                "/exportusers - Export all user config (save before deploying!)\n"
                 "/addchat - Add this chat to broadcasts\n"
                 "/removechat - Remove this chat\n"
                 "/listchats - Show chats\n"
@@ -498,6 +505,35 @@ def handle_command(msg):
             time.sleep(1)
         return
 
+    if text == "/exportusers":
+        users = load_users()
+        if not users:
+            send_message("No users registered.", chat_id=chat_id)
+            return
+        export = json.dumps(users, indent=2)
+        # Send as a text message (Telegram caps at 4096 chars, split if needed)
+        if len(export) <= 4000:
+            send_message(
+                f"Current USERS_CONFIG value — paste this into Railway Variables before deploying:\n\n"
+                f"<code>{export}</code>",
+                chat_id=chat_id
+            )
+            # Send raw version too for easy copying
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": export}
+            )
+        else:
+            # Send as a document if too long
+            import io
+            file_bytes = export.encode("utf-8")
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+                data={"chat_id": chat_id, "caption": "USERS_CONFIG — paste into Railway Variables before deploying"},
+                files={"document": ("users_config.json", io.BytesIO(file_bytes), "application/json")}
+            )
+        return
+
     if text == "/listusers":
         users = load_users()
         if not users:
@@ -505,7 +541,8 @@ def handle_command(msg):
             return
         lines = [f"Registered users ({len(users)}):"]
         for uid, u in users.items():
-            lines.append(f"  - {u.get('name','Unknown')} (id: {uid})")
+            media = u.get("media_type", "none")
+            lines.append(f"  - {u.get('name','Unknown')} (id: {uid}, media: {media})")
         send_message("\n".join(lines), chat_id=chat_id)
         return
 
