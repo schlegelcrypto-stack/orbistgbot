@@ -294,7 +294,7 @@ def format_user_stats(user_id, user, data, show_delta=False):
     d_total     = f" (+${round(total_earned - prev_total, 2)})" if show_delta and total_earned > prev_total else ""
 
     apis = apis_raw if isinstance(apis_raw, list) else apis_raw.get("apis", [])
-    apis = sorted(apis, key=lambda a: a.get("subscriberCount") or a.get("subscribers") or 0, reverse=True)
+    apis = sorted(apis, key=lambda a: a.get("callCount") or 0, reverse=True)
 
     lines = [
         f"{name} Orbis API Tracker\n",
@@ -310,8 +310,8 @@ def format_user_stats(user_id, user, data, show_delta=False):
     ]
     for a in apis[:5]:
         n = a.get("name") or a.get("apiName") or "Unnamed"
-        s = a.get("subscriberCount") or a.get("subscribers") or 0
-        lines.append(f"  - {n}: {s} subs")
+        c = a.get("callCount") or 0
+        lines.append(f"  - {n}: {c} calls")
 
     lines += ["", now_pst, "", f"*This tracks '{name}' only for fun, not a full network tracker"]
     return "\n".join(lines)
